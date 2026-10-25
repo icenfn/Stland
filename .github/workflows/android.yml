@@ -126,8 +126,10 @@ jobs:
         env:
           NDK_HOME: ${{ steps.sdk.outputs.ndk_home }}
         run: |
-          npx tauri android build --apk --target aarch64 --ci \
-            || npx tauri android build --apk --target aarch64
+          # 注意：android build 没有 --ci 选项（只有 init 有），误传会直接报
+          # "unexpected argument '--ci' found" 而失败。
+          # beforeBuildCommand 会按 tauri.conf.json 自动先构建前端产物。
+          npx tauri android build --apk --target aarch64
 
       - name: Collect APK
         id: apk
