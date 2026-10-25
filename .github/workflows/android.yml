@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: '版本号（用于 APK 文件名与 versionName）'
+        description: '版本号（用于 APK 文件名）'
         required: false
         default: '1.0.0'
 
@@ -21,12 +21,15 @@ jobs:
   build-apk:
     name: Build arm64 APK
     runs-on: ubuntu-22.04
-    timeout-minutes: 60
+    timeout-minutes: 90
+    env:
+      # 使用 runner 预装的 Android SDK，避免 setup-android 动作执行
+      # `sdkmanager tools`（该包在 cmdline-tools 16 已被移除，会直接失败）
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -40,13 +43,30 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install NDK
+      - name: Verify Android SDK & resolve NDK
+        id: sdk
         run: |
-          yes | sdkmanager --licenses > /dev/null || true
-          sdkmanager "ndk;27.0.12077973" "platforms;android-34" "build-tools;34.0.0"
+          SDK="${ANDROID_HOME}"
+          echo "SDK root: $SDK"
+          ls "$SDK" || true
+          # 预装镜像通常在 $SDK/ndk/<ver>，也可能在 /usr/local/lib/android/sdk/ndk-bundle
+          NDK_DIR=""
+          if [ -d "$SDK/ndk" ]; then
+            NDK_DIR=$(ls -d "$SDK"/ndk/*/ 2>/dev/null | sort -V | tail -1)
+          fi
+          if [ -z "$NDK_DIR" ] && [ -d "$SDK/ndk-bundle" ]; then
+            NDK_DIR="$SDK/ndk-bundle/"
+          fi
+          if [ -z "$NDK_DIR" ]; then
+            echo "未发现预装 NDK，尝试安装"
+            yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
+            "$SDK/cmdline-tools/latest/bin/sdkmanager" "ndk;27.0.12077973" > /dev/null
+            NDK_DIR="$SDK/ndk/27.0.12077973/"
+          fi
+          NDK_DIR="${NDK_DIR%/}"
+          echo "NDK: $NDK_DIR"
+          "$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar" --version | head -1
+          echo "ndk_home=$NDK_DIR" >> "$GITHUB_OUTPUT"
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -69,17 +89,19 @@ jobs:
         run: npm run build:web
 
       - name: Inject signing keystore
+        id: signing
         env:
           KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
           STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
         run: |
+          mkdir -p src-tauri/gen/android
           if [ -z "$KEYSTORE_BASE64" ]; then
-            echo "::warning::未配置 ANDROID_KEYSTORE_BASE64，将以 debug 签名构建（不可用于分发）"
+            echo "::warning::未配置 ANDROID_KEYSTORE_BASE64，将使用 debug 签名（产物不可对外分发）"
+            echo "signed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          mkdir -p src-tauri/gen/android/app
           echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
           cat > src-tauri/gen/android/keystore.properties <<EOF
           storeFile=$RUNNER_TEMP/release.jks
@@ -87,74 +109,46 @@ jobs:
           keyAlias=$KEY_ALIAS
           keyPassword=$KEY_PASSWORD
           EOF
-          echo "签名配置已写入"
+          echo "签名物料已就位"
+          echo "signed=true" >> "$GITHUB_OUTPUT"
 
       - name: Init Android project
-        if: ${{ hashFiles('src-tauri/gen/android/app/build.gradle.kts') == '' }}
         env:
-          NDK_HOME: ${{ env.ANDROID_NDK_HOME }}
+          NDK_HOME: ${{ steps.sdk.outputs.ndk_home }}
         run: npx tauri android init --ci
 
-      - name: Apply signing config to gradle
-        if: ${{ hashFiles('src-tauri/gen/android/keystore.properties') != '' }}
-        run: |
-          python3 - <<'PY'
-          import pathlib, re
-          p = pathlib.Path("src-tauri/gen/android/app/build.gradle.kts")
-          s = p.read_text(encoding="utf-8")
-          if "keystore.properties" in s:
-              print("已存在签名配置，跳过")
-          else:
-              loader = '''
-          import java.util.Properties
-          import java.io.FileInputStream
-
-          val keystorePropertiesFile = rootProject.file("keystore.properties")
-          val keystoreProperties = Properties()
-          if (keystorePropertiesFile.exists()) {
-              keystoreProperties.load(FileInputStream(keystorePropertiesFile))
-          }
-          '''
-              # 在文件首个 import 之前插入读取逻辑
-              idx = s.find("import ")
-              s = s[:idx] + loader.strip() + "\n\n" + s[idx:]
-              signing = '''
-              signingConfigs {
-                  create("release") {
-                      if (keystorePropertiesFile.exists()) {
-                          keyAlias = keystoreProperties["keyAlias"] as String
-                          keyPassword = keystoreProperties["keyPassword"] as String
-                          storeFile = file(keystoreProperties["storeFile"] as String)
-                          storePassword = keystoreProperties["storePassword"] as String
-                      }
-                  }
-              }
-              '''
-              s = s.replace("buildTypes {", signing + "\n    buildTypes {", 1)
-              s = s.replace("getByName(\"release\") {", "getByName(\"release\") {\n            signingConfig = if (keystorePropertiesFile.exists()) signingConfigs.getByName(\"release\") else signingConfigs.getByName(\"debug\")", 1)
-              p.write_text(s, encoding="utf-8")
-              print("gradle 签名配置已注入")
-          PY
+      - name: Patch gradle signing
+        env:
+          NDK_HOME: ${{ steps.sdk.outputs.ndk_home }}
+        run: python3 scripts/patch_android_signing.py
 
       - name: Build arm64 APK
         env:
-          NDK_HOME: ${{ env.ANDROID_NDK_HOME }}
-          TAURI_ANDROID_TARGET: aarch64
+          NDK_HOME: ${{ steps.sdk.outputs.ndk_home }}
         run: |
-          npx tauri android build --apk --target aarch64 --ci || npx tauri android build --apk --target aarch64
+          npx tauri android build --apk --target aarch64 --ci \
+            || npx tauri android build --apk --target aarch64
 
       - name: Collect APK
         id: apk
         run: |
           VER="${{ github.event.inputs.version || '1.0.0' }}"
           APK=$(find src-tauri/gen/android -name "*.apk" -type f | head -1)
-          if [ -z "$APK" ]; then echo "::error::未找到 APK 产物"; exit 1; fi
-          NAME="Stland-${VER}-arm64-$(echo $GITHUB_SHA | cut -c1-7).apk"
+          if [ -z "$APK" ]; then
+            echo "::error::未找到 APK 产物"
+            find src-tauri/gen/android -name "*.apk" -o -name "*.aab" | head
+            exit 1
+          fi
+          SUFFIX=""
+          if [ "${{ steps.signing.outputs.signed }}" != "true" ]; then SUFFIX="-debug"; fi
+          NAME="Stland-${VER}-arm64${SUFFIX}-$(echo $GITHUB_SHA | cut -c1-7).apk"
           mkdir -p dist-apk
           cp "$APK" "dist-apk/$NAME"
           echo "path=dist-apk/$NAME" >> "$GITHUB_OUTPUT"
           echo "name=$NAME" >> "$GITHUB_OUTPUT"
           ls -lh dist-apk
+          # 记录签名状态，便于人工核验产物是否可用于分发
+          "$ANDROID_HOME/build-tools/"*/apksigner verify --print-certs "dist-apk/$NAME" 2>/dev/null | head -5 || true
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
