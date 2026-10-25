@@ -75,6 +75,16 @@ CI 已内置同流程：`.github/workflows/android.yml` 在打 tag（`v*`）时�
 
 ### 签名配置
 
+签名采用 **APK 层重签**，而不是修改 `tauri android init` 生成的 Gradle 脚本：
+
+```
+tauri android build --apk  →  zipalign -p 4  →  apksigner sign (v1+v2+v3)  →  apksigner verify
+```
+
+原因：`app/build.gradle.kts` 由 CLI 生成，文本结构随版本变化，向其中注入 `signingConfigs`
+属于脆弱做法（实测因插入位置导致 Kotlin 脚本 8 处编译错误）。`zipalign` + `apksigner`
+是 Android 官方确定性流程，与模板结构无关，且产物可被 `apksigner verify` 直接核验。
+
 仓库**不含**任何签名物料（`*.jks` / `keystore.properties` 已加入 `.gitignore`）。CI 通过以下 Secrets 注入：
 
 | Secret | 说明 |
@@ -84,7 +94,7 @@ CI 已内置同流程：`.github/workflows/android.yml` 在打 tag（`v*`）时�
 | `ANDROID_KEY_PASSWORD` | 密钥口令 |
 | `ANDROID_STORE_PASSWORD` | keystore 口令 |
 
-缺失时工作流会降级为 debug 签名并打印警告 —— 仅可直接安装，不可对外分发。
+缺失时工作流会保留 debug 签名、产物名带 `-debug` 后缀并打印警告 —— 仅可直接安装，不可对外分发。
 
 本地生成一套自用密钥：
 

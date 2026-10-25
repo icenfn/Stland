@@ -23,8 +23,10 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 90
     env:
-      # 使用 runner 预装的 Android SDK，避免 setup-android 动作执行
-      # `sdkmanager tools`（该包在 cmdline-tools 16 已被移除，会直接失败）
+      # 复用 runner 预装的 Android SDK。
+      # 不用 android-actions/setup-android：它会执行 `sdkmanager tools`，
+      # 而该包在 cmdline-tools 16 已被移除，会以
+      # "Warning: Failed to find package 'tools'" 直接失败。
       ANDROID_HOME: /usr/local/lib/android/sdk
       ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
     steps:
@@ -43,30 +45,31 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Verify Android SDK & resolve NDK
+      - name: Resolve Android toolchain
         id: sdk
         run: |
-          SDK="${ANDROID_HOME}"
+          SDK="$ANDROID_HOME"
           echo "SDK root: $SDK"
-          ls "$SDK" || true
-          # 预装镜像通常在 $SDK/ndk/<ver>，也可能在 /usr/local/lib/android/sdk/ndk-bundle
           NDK_DIR=""
-          if [ -d "$SDK/ndk" ]; then
-            NDK_DIR=$(ls -d "$SDK"/ndk/*/ 2>/dev/null | sort -V | tail -1)
-          fi
-          if [ -z "$NDK_DIR" ] && [ -d "$SDK/ndk-bundle" ]; then
-            NDK_DIR="$SDK/ndk-bundle/"
-          fi
+          [ -d "$SDK/ndk" ] && NDK_DIR=$(ls -d "$SDK"/ndk/*/ 2>/dev/null | sort -V | tail -1)
+          if [ -z "$NDK_DIR" ] && [ -d "$SDK/ndk-bundle" ]; then NDK_DIR="$SDK/ndk-bundle/"; fi
           if [ -z "$NDK_DIR" ]; then
-            echo "未发现预装 NDK，尝试安装"
-            yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
+            echo "未发现预装 NDK，安装 27.x"
             "$SDK/cmdline-tools/latest/bin/sdkmanager" "ndk;27.0.12077973" > /dev/null
             NDK_DIR="$SDK/ndk/27.0.12077973/"
           fi
           NDK_DIR="${NDK_DIR%/}"
+          BT_DIR=$(ls -d "$SDK"/build-tools/*/ 2>/dev/null | sort -V | tail -1)
+          BT_DIR="${BT_DIR%/}"
           echo "NDK: $NDK_DIR"
+          echo "build-tools: $BT_DIR"
           "$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar" --version | head -1
-          echo "ndk_home=$NDK_DIR" >> "$GITHUB_OUTPUT"
+          "$BT_DIR/zipalign" 2>&1 | head -1 || true
+          "$BT_DIR/apksigner" --version
+          {
+            echo "ndk_home=$NDK_DIR"
+            echo "build_tools=$BT_DIR"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -88,9 +91,9 @@ jobs:
       - name: Build web assets
         run: npm run build:web
 
-      # 顺序很关键：必须先 init 再注入 keystore。
-      # tauri android init 以 gen/android 是否存在来判断「工程已初始化」；
-      # 若提前 mkdir 出该目录，init 会跳过脚手架，随后因
+      # 顺序很关键：必须先 init。
+      # tauri android init 以 gen/android 是否存在判断「工程已初始化」，
+      # 若提前创建该目录，init 会跳过脚手架，随后因
       # app/src/main/java/<identifier> 不存在而报错退出。
       - name: Init Android project
         env:
@@ -103,63 +106,67 @@ jobs:
             || { echo "::error::Android 脚手架未生成"; find src-tauri/gen -maxdepth 6 -type d | head -30; exit 1; }
           ls src-tauri/gen/android
 
-      - name: Inject signing keystore
-        id: signing
+      - name: Build arm64 APK
+        env:
+          NDK_HOME: ${{ steps.sdk.outputs.ndk_home }}
+        run: |
+          # android build 没有 --ci 选项（仅 init 有），误传会报
+          # "unexpected argument '--ci' found"。
+          # 此步产出的是 debug 签名的 APK，随后由 apksigner 用发布密钥重签。
+          npx tauri android build --apk --target aarch64
+
+      - name: Align and sign APK
+        id: apk
         env:
           KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
           STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          BUILD_TOOLS: ${{ steps.sdk.outputs.build_tools }}
+          VER: ${{ github.event.inputs.version || '1.0.0' }}
         run: |
-          if [ -z "$KEYSTORE_BASE64" ]; then
-            echo "::warning::未配置 ANDROID_KEYSTORE_BASE64，将使用 debug 签名（产物不可对外分发）"
-            echo "signed=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
-          cat > src-tauri/gen/android/keystore.properties <<EOF
-          storeFile=$RUNNER_TEMP/release.jks
-          storePassword=$STORE_PASSWORD
-          keyAlias=$KEY_ALIAS
-          keyPassword=$KEY_PASSWORD
-          EOF
-          echo "签名物料已就位"
-          echo "signed=true" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          SRC=$(find src-tauri/gen/android -path "*release*" -name "*.apk" -type f | head -1)
+          if [ -z "$SRC" ]; then SRC=$(find src-tauri/gen/android -name "*.apk" -type f | head -1); fi
+          if [ -z "$SRC" ]; then echo "::error::未找到 APK 产物"; find src-tauri/gen/android -name "*.apk" | head; exit 1; fi
+          echo "源 APK: $SRC"
 
-      - name: Patch gradle signing
-        env:
-          NDK_HOME: ${{ steps.sdk.outputs.ndk_home }}
-        run: python3 scripts/patch_android_signing.py
-
-      - name: Build arm64 APK
-        env:
-          NDK_HOME: ${{ steps.sdk.outputs.ndk_home }}
-        run: |
-          # 注意：android build 没有 --ci 选项（只有 init 有），误传会直接报
-          # "unexpected argument '--ci' found" 而失败。
-          # beforeBuildCommand 会按 tauri.conf.json 自动先构建前端产物。
-          npx tauri android build --apk --target aarch64
-
-      - name: Collect APK
-        id: apk
-        run: |
-          VER="${{ github.event.inputs.version || '1.0.0' }}"
-          APK=$(find src-tauri/gen/android -name "*.apk" -type f | head -1)
-          if [ -z "$APK" ]; then
-            echo "::error::未找到 APK 产物"
-            find src-tauri/gen/android -name "*.apk" -o -name "*.aab" | head
-            exit 1
-          fi
-          SUFFIX=""
-          if [ "${{ steps.signing.outputs.signed }}" != "true" ]; then SUFFIX="-debug"; fi
-          NAME="Stland-${VER}-arm64${SUFFIX}-$(echo $GITHUB_SHA | cut -c1-7).apk"
           mkdir -p dist-apk
-          cp "$APK" "dist-apk/$NAME"
-          echo "path=dist-apk/$NAME" >> "$GITHUB_OUTPUT"
+          SUFFIX=""
+          if [ -z "${KEYSTORE_BASE64:-}" ]; then
+            echo "::warning::未配置 ANDROID_KEYSTORE_BASE64，产物保持 debug 签名（不可对外分发）"
+            SUFFIX="-debug"
+            cp "$SRC" "dist-apk/Stland-${VER}-arm64${SUFFIX}-.apk"
+          else
+            echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+            # 之所以在 APK 层面重签而不是改 Gradle 脚本：
+            # app/build.gradle.kts 由 tauri android init 生成，文本结构随 CLI 版本变化，
+            # 文本注入脆弱且已实测插入位置错误导致 Kotlin 脚本编译失败。
+            # zipalign + apksigner 是 Android 官方的确定性流程，与模板无关。
+            "$BUILD_TOOLS/zipalign" -f -p 4 "$SRC" "$RUNNER_TEMP/aligned.apk"
+            "$BUILD_TOOLS/apksigner" sign \
+              --ks "$RUNNER_TEMP/release.jks" \
+              --ks-key-alias "$KEY_ALIAS" \
+              --ks-pass "pass:$STORE_PASSWORD" \
+              --key-pass "pass:$KEY_PASSWORD" \
+              --v1-signing-enabled true \
+              --v2-signing-enabled true \
+              --v3-signing-enabled true \
+              --out "$RUNNER_TEMP/signed.apk" \
+              "$RUNNER_TEMP/aligned.apk"
+            cp "$RUNNER_TEMP/signed.apk" "dist-apk/Stland-${VER}-arm64-.apk"
+          fi
+
+          NAME="Stland-${VER}-arm64${SUFFIX}-$(echo $GITHUB_SHA | cut -c1-7).apk"
+          mv "dist-apk/Stland-${VER}-arm64${SUFFIX}-.apk" "dist-apk/$NAME"
           echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "path=dist-apk/$NAME" >> "$GITHUB_OUTPUT"
           ls -lh dist-apk
-          # 记录签名状态，便于人工核验产物是否可用于分发
-          "$ANDROID_HOME/build-tools/"*/apksigner verify --print-certs "dist-apk/$NAME" 2>/dev/null | head -5 || true
+
+          echo "=== 证书核验 ==="
+          "$BUILD_TOOLS/apksigner" verify --print-certs "dist-apk/$NAME" | head -8
+          echo "=== 文件类型 ==="
+          file "dist-apk/$NAME"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
