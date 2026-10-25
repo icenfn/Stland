@@ -88,6 +88,21 @@ jobs:
       - name: Build web assets
         run: npm run build:web
 
+      # 顺序很关键：必须先 init 再注入 keystore。
+      # tauri android init 以 gen/android 是否存在来判断「工程已初始化」；
+      # 若提前 mkdir 出该目录，init 会跳过脚手架，随后因
+      # app/src/main/java/<identifier> 不存在而报错退出。
+      - name: Init Android project
+        env:
+          NDK_HOME: ${{ steps.sdk.outputs.ndk_home }}
+        run: npx tauri android init --ci
+
+      - name: Verify Android scaffold
+        run: |
+          test -d "src-tauri/gen/android/app/src/main/java/ai/stland/app" \
+            || { echo "::error::Android 脚手架未生成"; find src-tauri/gen -maxdepth 6 -type d | head -30; exit 1; }
+          ls src-tauri/gen/android
+
       - name: Inject signing keystore
         id: signing
         env:
@@ -96,7 +111,6 @@ jobs:
           KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
           STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
         run: |
-          mkdir -p src-tauri/gen/android
           if [ -z "$KEYSTORE_BASE64" ]; then
             echo "::warning::未配置 ANDROID_KEYSTORE_BASE64，将使用 debug 签名（产物不可对外分发）"
             echo "signed=false" >> "$GITHUB_OUTPUT"
@@ -111,11 +125,6 @@ jobs:
           EOF
           echo "签名物料已就位"
           echo "signed=true" >> "$GITHUB_OUTPUT"
-
-      - name: Init Android project
-        env:
-          NDK_HOME: ${{ steps.sdk.outputs.ndk_home }}
-        run: npx tauri android init --ci
 
       - name: Patch gradle signing
         env:
