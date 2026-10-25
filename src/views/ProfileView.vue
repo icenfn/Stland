@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { feedback } from '@/naive'
 /** 我的：账户信息、角色能力、风控等级、退出登录 */
 import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
@@ -37,7 +38,13 @@ async function doLogout() {
 }
 
 async function resetAccount() {
-  if (!window.confirm('确认重置账户？将清空持仓、委托与流水，并恢复初始资金。')) return
+  const ok = await feedback.confirm({
+    title: '重置账户',
+    content: '将清空持仓、委托与流水，并恢复初始资金。此操作不可撤销。',
+    positiveText: '确认重置',
+    danger: true,
+  })
+  if (!ok) return
   try {
     const res = await accountApi.reset()
     message.value = `账户已重置，可用资金 ${res.cash.toFixed(2)} 元`

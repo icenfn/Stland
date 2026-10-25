@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { feedback } from '@/naive'
 /** 委托与成交：双 Tab，支持撤单 */
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { useIntervalFn } from '@vueuse/core'
@@ -43,7 +44,13 @@ async function refresh() {
 }
 
 async function cancel(o: OrderItem) {
-  if (!window.confirm(`确认撤销委托 ${o.order_no}？`)) return
+  const ok = await feedback.confirm({
+    title: '撤销委托',
+    content: `确认撤销委托 ${o.order_no}？`,
+    positiveText: '撤单',
+    danger: true,
+  })
+  if (!ok) return
   try {
     await tradeApi.cancel(o.id)
     message.value = '撤单成功'

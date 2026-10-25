@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { feedback } from '@/naive'
 /** 管理端：运营总览、用户管理、撮合质量、审计日志、日终结算，仅 admin 可见 */
 import { computed, onMounted, ref } from 'vue'
 import { adminApi } from '@/api'
@@ -84,7 +85,12 @@ async function adjust(u: any) {
 }
 
 async function settle() {
-  if (!window.confirm('执行日终结转？当日买入持仓将解锁为可卖（T+1）。')) return
+  const ok = await feedback.confirm({
+    title: '日终结转',
+    content: '执行后当日买入持仓将解锁为可卖（T+1）。',
+    positiveText: '执行结转',
+  })
+  if (!ok) return
   busy.value = true
   try {
     await adminApi.settle()

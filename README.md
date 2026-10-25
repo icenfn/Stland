@@ -37,6 +37,27 @@ npm run dev            # 浏览器预览（http://localhost:1420）
 npm run tauri dev      # 原生壳调试
 ```
 
+## 请求层：AlovaJS + 统一签名
+
+所有请求经由一个 AlovaJS 实例发出（`src/api/http.ts`），签名、令牌注入、401 统一登出全部收敛在 `beforeRequest` 这一个出口：
+
+- 适配器为 `alova/fetch`。**注意**：v3 已移除旧的 `alova/GlobalFetch` 入口，误用会让 Vite 报 `Missing "./GlobalFetch" specifier` 并直接构建失败。
+- 关闭了 Alova 对 GET 的默认缓存（`cacheFor: { GET: 0 }`），行情与账户必须实时。
+- 签名是纯函数模块（`src/api/sign.ts`），不依赖任何库，可独立在 Node 中与服务端对拍：
+
+```
+签名原文 = METHOD \n PATH \n TS \n NONCE \n SHA256(BODY) \n USER_ID
+X-Stland-Sign = HMAC-SHA256(共享密钥, 签名原文)
+```
+
+`PATH` 必须**不含查询串**（与 FastAPI 的 `request.url.path` 对齐）。已验证：篡改签名与重放 nonce 均返回 `400 BAD_SIGNATURE`。
+
+## UI：Naive UI 主题对齐
+
+`src/App.vue` 用 `n-config-provider` 注入 `darkTheme` 与 `GlobalThemeOverrides`，把 Naive UI 的令牌映射到 `global.css` 的设计变量，避免「深色页面弹出亮白对话框」的割裂。
+
+`src/components/NaiveBridge.vue` 在 Provider 子树内取到 `useMessage` / `useDialog` 并交给 `src/naive.ts` 的 `feedback`，于是 store、api 层、路由守卫等非组件代码也能统一走 Naive UI 的提示与二次确认（`window.confirm` 已全部替换）。
+
 连接服务端：复制 `.env.example` 为 `.env`，把 `VITE_API_BASE` 指向服务端地址。
 
 ```bash
