@@ -94,7 +94,8 @@ tauri android build --apk  →  zipalign -p 4  →  apksigner sign (v1+v2+v3)  �
 | `ANDROID_KEY_PASSWORD` | 密钥口令 |
 | `ANDROID_STORE_PASSWORD` | keystore 口令 |
 
-缺失时工作流会保留 debug 签名、产物名带 `-debug` 后缀并打印警告 —— 仅可直接安装，不可对外分发。
+缺失时工作流会**现场生成一次性调试密钥**完成签名（未签名 APK 无法安装，直接产出未签名包等于交付废件），
+产物名带 `-debug` 后缀并打印警告 —— 仅可直接安装，不可对外分发。
 
 本地生成一套自用密钥：
 
