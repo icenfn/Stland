@@ -1,0 +1,63 @@
+/* 沉浸式状态栏与输入法（软键盘）适配 —— 独立样式，便于对照 astrbot-plus 的方案替换。
+ *
+ * 三个要点：
+ * 1) 内容延伸到状态栏下方（viewport-fit=cover + env(safe-area-inset-top)）；
+ * 2) 顶栏高度 = 状态栏高度 + 内容高度，用 CSS 变量注入（Android 由原生插件提供真实值）；
+ * 3) 软键盘弹出时用 visualViewport 计算出被遮挡高度，抬升底部输入区。
+ */
+
+:root {
+  /* 由 useImmersiveBar() 在运行时写入真实值（Android 状态栏像素高度 / DPR） */
+  --status-bar-height: 0px;
+  --nav-content-height: 46px;
+  --keyboard-inset: 0px;
+}
+
+/* 顶栏：把状态栏区域一起染色，形成"沉浸"观感 */
+.app-bar {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  padding-top: var(--status-bar-height);
+  background: linear-gradient(180deg, #101823 0%, rgba(16, 24, 35, 0.94) 100%);
+  backdrop-filter: saturate(160%) blur(14px);
+  border-bottom: 1px solid var(--c-line);
+}
+
+.app-bar__inner {
+  height: var(--nav-content-height);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px;
+}
+
+.app-bar__title {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+/* 底部固定栏（TabBar / 下单按钮条）需避开手势条 */
+.bottom-bar {
+  padding-bottom: var(--safe-bottom);
+  background: rgba(18, 26, 38, 0.94);
+  backdrop-filter: blur(18px);
+  border-top: 1px solid var(--c-line);
+}
+
+/* 输入法防遮挡：面板底部自动抬起 */
+.keyboard-safe {
+  padding-bottom: calc(var(--keyboard-inset) + var(--safe-bottom));
+  transition: padding-bottom 0.18s ease;
+}
+
+/* 键盘可见时隐藏 TabBar，避免与输入面板叠加 */
+body.keyboard-open .app-tabbar {
+  transform: translateY(110%);
+  transition: transform 0.2s ease;
+}
+
+/* 页面根容器统一预留顶栏高度（顶栏 sticky 后内容不再被遮挡） */
+.with-app-bar {
+  padding-top: 0;
+}

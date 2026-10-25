@@ -1,0 +1,265 @@
+<script setup lang="ts">
+/** 首页：指数卡 + 涨跌分布 + 榜单，仿东方财富首页信息架构 */
+import { computed, onMounted, onBeforeUnmount, ref } from 'vue'
+import { useRouter } from 'vue-router'
+import { useMarket } from '@/stores/market'
+import { useAuth } from '@/stores/auth'
+import { fmtAmount, fmtPct, fmtPrice, trendClass } from '@/utils/format'
+import MiniChart from '@/components/MiniChart.vue'
+import QuoteRow from '@/components/QuoteRow.vue'
+
+const router = useRouter()
+const market = useMarket()
+const { state, session, index, upCount, downCount } = market
+const auth = useAuth()
+
+const rankTab = ref<'gainers' | 'losers' | 'active'>('gainers')
+
+const rankList = computed(() => {
+  const r = state.overview?.rank
+  if (!r) return []
+  return rankTab.value === 'gainers' ? r.gainers : rankTab.value === 'losers' ? r.losers : r.active
+})
+
+const indexMinutes = computed(() => state.overview?.index_minutes ?? [])
+const totalAmount = computed(() => state.overview?.stats.total_amount ?? 0)
+
+onMounted(() => market.start(1500))
+onBeforeUnmount(() => market.stop())
+</script>
+
+<template>
+  <div class="page home">
+    <header class="app-bar">
+      <div class="app-bar__inner">
+        <div class="brand">股岛</div>
+        <div class="grow" />
+        <span class="session-chip" :class="{ open: session?.can_trade }">
+          {{ session?.label ?? '连接中' }}
+        </span>
+      </div>
+    </header>
+
+    <!-- 指数卡 -->
+    <section class="px" style="padding-top: 12px">
+      <div class="card index-card">
+        <div class="row-between">
+          <div>
+            <div class="index-name">{{ index?.name ?? '股岛综合指数' }}</div>
+            <div class="index-price tabular" :class="trendClass(index?.change ?? 0)">
+              {{ fmtPrice(index?.price ?? 0) }}
+            </div>
+            <div class="index-change tabular" :class="trendClass(index?.change ?? 0)">
+              {{ index && index.change > 0 ? '+' : '' }}{{ fmtPrice(index?.change ?? 0) }}
+              <span style="margin-left: 6px">{{ fmtPct(index?.change_pct ?? 0) }}</span>
+            </div>
+          </div>
+          <div class="chart-box">
+            <MiniChart :minutes="indexMinutes" :prev-close="index?.prev_close ?? 0" :height="76" />
+          </div>
+        </div>
+
+        <div class="dist">
+          <div class="dist-item">
+            <span class="dist-num up">{{ upCount }}</span>
+            <span class="text-xs">上涨</span>
+          </div>
+          <div class="dist-item">
+            <span class="dist-num flat">{{ state.overview?.stats.flat ?? 0 }}</span>
+            <span class="text-xs">平盘</span>
+          </div>
+          <div class="dist-item">
+            <span class="dist-num down">{{ downCount }}</span>
+            <span class="text-xs">下跌</span>
+          </div>
+          <div class="dist-item wide">
+            <span class="dist-num tabular">{{ fmtAmount(totalAmount) }}</span>
+            <span class="text-xs">总成交额</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 快捷入口 -->
+    <section class="px quick">
+      <button class="quick-item" @click="router.push('/trade')">
+        <div class="quick-ico buy">买</div>
+        <span>买入</span>
+      </button>
+      <button class="quick-item" @click="router.push('/trade')">
+        <div class="quick-ico sell">卖</div>
+        <span>卖出</span>
+      </button>
+      <button class="quick-item" @click="router.push('/orders')">
+        <div class="quick-ico">单</div>
+        <span>委托</span>
+      </button>
+      <button class="quick-item" @click="router.push('/assets')">
+        <div class="quick-ico">仓</div>
+        <span>持仓</span>
+      </button>
+      <button class="quick-item" @click="router.push('/market')">
+        <div class="quick-ico">行</div>
+        <span>行情</span>
+      </button>
+    </section>
+
+    <!-- 榜单 -->
+    <section class="rank">
+      <div class="rank-tabs">
+        <button class="rank-tab" :class="{ on: rankTab === 'gainers' }" @click="rankTab = 'gainers'">涨幅榜</button>
+        <button class="rank-tab" :class="{ on: rankTab === 'losers' }" @click="rankTab = 'losers'">跌幅榜</button>
+        <button class="rank-tab" :class="{ on: rankTab === 'active' }" @click="rankTab = 'active'">成交额</button>
+      </div>
+
+      <div v-if="!rankList.length" class="empty">行情加载中…</div>
+      <QuoteRow v-for="q in rankList" :key="q.code" :quote="q" show-hotword />
+    </section>
+
+    <p class="disclaimer px">
+      本系统为自包含模拟交易环境，全部行情由内置引擎生成，不构成任何投资建议。
+    </p>
+  </div>
+</template>
+
+<style scoped>
+.brand {
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: 2px;
+  background: linear-gradient(120deg, #ff6b6d, #ffb45c);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.session-chip {
+  font-size: 11px;
+  padding: 4px 9px;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--c-text-2);
+}
+.session-chip.open {
+  background: rgba(255, 77, 79, 0.16);
+  color: #ff8b8d;
+}
+
+.index-card {
+  background: linear-gradient(150deg, #1d2837, #151d29);
+}
+.index-name {
+  font-size: 12px;
+  color: var(--c-text-2);
+}
+.index-price {
+  font-size: 27px;
+  font-weight: 700;
+  line-height: 1.2;
+  margin-top: 2px;
+}
+.index-change {
+  font-size: 12px;
+  margin-top: 2px;
+}
+.chart-box {
+  width: 118px;
+}
+
+.dist {
+  display: flex;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--c-line);
+  gap: 8px;
+}
+.dist-item {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+.dist-item.wide {
+  flex: 1.6;
+}
+.dist-num {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.quick {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 14px;
+  padding: 12px 14px;
+  background: var(--c-card);
+  border-radius: var(--r-lg);
+  border: 1px solid var(--c-line);
+  margin-left: 14px;
+  margin-right: 14px;
+}
+.quick-item {
+  background: none;
+  border: none;
+  color: var(--c-text-2);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.quick-ico {
+  width: 34px;
+  height: 34px;
+  border-radius: 11px;
+  display: grid;
+  place-items: center;
+  font-size: 14px;
+  font-weight: 700;
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--c-text);
+}
+.quick-ico.buy {
+  background: rgba(255, 77, 79, 0.18);
+  color: #ff8b8d;
+}
+.quick-ico.sell {
+  background: rgba(18, 183, 106, 0.18);
+  color: #4ade9b;
+}
+
+.rank {
+  margin-top: 16px;
+  background: var(--c-card);
+  border-radius: var(--r-lg) var(--r-lg) 0 0;
+  border-top: 1px solid var(--c-line);
+  overflow: hidden;
+}
+.rank-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 10px 12px 8px;
+}
+.rank-tab {
+  background: none;
+  border: none;
+  color: var(--c-text-3);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 6px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.rank-tab.on {
+  color: var(--c-brand);
+  background: rgba(232, 56, 61, 0.12);
+}
+
+.disclaimer {
+  font-size: 10px;
+  color: var(--c-text-3);
+  margin: 16px 0 8px;
+  line-height: 1.6;
+}
+</style>

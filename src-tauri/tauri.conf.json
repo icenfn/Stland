@@ -1,0 +1,38 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Stland",
+  "version": "1.0.0",
+  "identifier": "ai.stland.app",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build:web",
+    "devUrl": "http://localhost:1420",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "Stland 股岛",
+        "width": 400,
+        "height": 860,
+        "resizable": true,
+        "fullscreen": false,
+        "minWidth": 340,
+        "minHeight": 600
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' http: https: ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["apk"],
+    "icon": ["icons/icon.png"],
+    "android": {
+      "minSdkVersion": 24
+    }
+  },
+  "plugins": {}
+}

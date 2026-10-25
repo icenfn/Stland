@@ -1,0 +1,14 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Stland 默认能力：仅开放必要的核心与 OS 信息接口",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-show",
+    "core:window:allow-set-decorations",
+    "core:window:allow-scale-factor",
+    "core:webview:allow-internal-toggle-devtools",
+    "os:default"
+  ]
+}
