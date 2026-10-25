@@ -1,22 +1,27 @@
 /**
- * HTTP 基础设施：AlovaJS 实例 + HMAC-SHA256 请求签名。
+ * HTTP 基础设施：轻量请求器 + HMAC-SHA256 请求签名。
+ *
+ * 为什么不用第三方请求库：
+ * 本项目只需要 GET / POST 两种动词与极少的配置项，而 alova v3 的
+ * 子路径导出（`alova/GlobalFetch`）在 Vite 的 ESM 解析下不稳定，
+ * 会直接导致构建失败。手写一层薄封装反而更可控、更小、更易审计——
+ * 尤其是签名逻辑属于安全边界，不应藏在第三方适配器的内部行为里。
  *
  * 安全设计（与服务端 app/security.py 严格对应）：
  *   签名原文 = METHOD \n PATH \n TS \n NONCE \n SHA256(BODY) \n USER_ID
  *   X-Stland-Sign = HMAC-SHA256(共享密钥, 签名原文) 十六进制
  * 作用：
- *   1) 篡改防护 —— 任何人改动请求体或路径都会使签名失效；
+ *   1) 篡改防护 —— 改动请求体或路径都会使签名失效；
  *   2) 重放防护 —— 时间戳窗口 + 随机数（nonce）去重由服务端保证；
  *   3) 会话绑定 —— user_id 参与签名，令牌与请求不可分离盗用。
  *
  * 密钥通过构建期环境变量注入（CI Secret），不硬编码在源码中。
  */
-import { createAlova } from 'alova'
-import GlobalFetch from 'alova/GlobalFetch'
 
-const BASE_URL = (import.meta.env.VITE_API_BASE as string) || 'http://127.0.0.1:8999'
+const BASE_URL = ((import.meta.env.VITE_API_BASE as string) || 'http://127.0.0.1:8999').replace(/\/$/, '')
 const SIGN_SECRET = (import.meta.env.VITE_API_SIGN_SECRET as string) || 'dev-sign-secret-stland'
 const SIGN_ENABLED = String(import.meta.env.VITE_API_SIGNATURE ?? 'true') !== 'false'
+const TIMEOUT_MS = 15000
 
 export const TOKEN_KEY = 'stland.access_token'
 export const USER_KEY = 'stland.user'
@@ -69,13 +74,6 @@ function currentUserId(): string {
   }
 }
 
-/** 从相对路径中去掉查询串，得到与 FastAPI request.url.path 一致的路径 */
-function signPath(url: string): string {
-  const clean = url.replace(BASE_URL, '')
-  const q = clean.indexOf('?')
-  return q >= 0 ? clean.slice(0, q) : clean
-}
-
 export interface ApiError extends Error {
   code?: string
   status?: number
@@ -105,64 +103,106 @@ export function setUnauthorizedHandler(fn: () => void) {
   onUnauthorized = fn
 }
 
-/** 手写请求适配：统一注入令牌与签名，并集中处理错误 */
-const fetchAdapter = GlobalFetch()
+/** 把 params 对象拼成查询串（跳过 undefined / null / 空串） */
+function buildQuery(params?: Record<string, unknown>): string {
+  if (!params) return ''
+  const usp = new URLSearchParams()
+  for (const [k, v] of Object.entries(params)) {
+    if (v === undefined || v === null || v === '') continue
+    usp.append(k, String(v))
+  }
+  const q = usp.toString()
+  return q ? `?${q}` : ''
+}
 
-export const alovaInstance = createAlova({
-  baseURL: BASE_URL,
-  timeout: 15000,
-  requestAdapter: async (elements, method) => {
-    const cfg = method.config as any
-    const headers: Record<string, string> = {
-      Accept: 'application/json',
-      ...(cfg.headers || {}),
-    }
+export interface RequestConfig {
+  params?: Record<string, unknown>
+  headers?: Record<string, string>
+  /** 'text' 时直接返回原始字符串，用于非 JSON 响应 */
+  responseType?: 'json' | 'text'
+}
 
-    const token = localStorage.getItem(TOKEN_KEY)
-    if (token) headers['Authorization'] = 'Bearer ' + token
+async function request<T>(method: 'GET' | 'POST', url: string, body?: unknown, cfg: RequestConfig = {}): Promise<T> {
+  const query = buildQuery(cfg.params)
+  const path = url // 已是相对路径，未含 BASE_URL
+  const full = BASE_URL + path + query
 
-    if (SIGN_ENABLED) {
-      const path = signPath(method.url)
-      const ts = Math.floor(Date.now() / 1000).toString()
-      const n = nonce()
-      const bodyText = cfg.data ? JSON.stringify(cfg.data) : ''
-      const bodyHash = await sha256Hex(bodyText)
-      const canonical = [method.type.toUpperCase(), path, ts, n, bodyHash, currentUserId()].join('\n')
-      headers['X-Stland-Ts'] = ts
-      headers['X-Stland-Nonce'] = n
-      headers['X-Stland-Sign'] = await hmacHex(SIGN_SECRET, canonical)
-      headers['X-Stland-User'] = currentUserId()
-    }
+  const headers: Record<string, string> = {
+    Accept: 'application/json',
+    ...(cfg.headers || {}),
+  }
+  if (body !== undefined) headers['Content-Type'] = 'application/json'
 
-    const response = await fetchAdapter(elements, { ...method, config: { ...cfg, headers } })
-    if (!response.ok) {
-      let payload: any = null
-      try {
-        payload = await response.json()
-      } catch {
-        payload = null
-      }
-      if (response.status === 401 && onUnauthorized) onUnauthorized()
-      throw normalizeError(response.status, payload)
-    }
-    return response
-  },
-  responded: {
-    onSuccess: async (response, method) => {
-      const cfg = method.config as any
-      if (cfg.responseType === 'text') return response.text()
-      const text = await response.text()
-      if (!text) return null
-      try {
-        return JSON.parse(text)
-      } catch {
-        return text
-      }
-    },
-    onError: (err: any) => {
+  const token = localStorage.getItem(TOKEN_KEY)
+  if (token) headers['Authorization'] = 'Bearer ' + token
+
+  const bodyText = body !== undefined ? JSON.stringify(body) : ''
+
+  if (SIGN_ENABLED) {
+    const ts = Math.floor(Date.now() / 1000).toString()
+    const n = nonce()
+    const bodyHash = await sha256Hex(bodyText)
+    // 签名用的是不含查询串的路径，与服务端 request.url.path 一致
+    const canonical = [method, path, ts, n, bodyHash, currentUserId()].join('\n')
+    headers['X-Stland-Ts'] = ts
+    headers['X-Stland-Nonce'] = n
+    headers['X-Stland-Sign'] = await hmacHex(SIGN_SECRET, canonical)
+    headers['X-Stland-User'] = currentUserId()
+  }
+
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS)
+  let response: Response
+  try {
+    response = await fetch(full, {
+      method,
+      headers,
+      body: bodyText || undefined,
+      signal: controller.signal,
+    })
+  } catch (e: any) {
+    if (e?.name === 'AbortError') {
+      const err = new Error('请求超时，请检查网络或服务端地址') as ApiError
+      err.code = 'TIMEOUT'
       throw err
-    },
-  },
-})
+    }
+    const err = new Error('无法连接服务端，请确认 Stland-server 已启动') as ApiError
+    err.code = 'NETWORK_ERROR'
+    throw err
+  } finally {
+    clearTimeout(timer)
+  }
+
+  if (!response.ok) {
+    let payload: any = null
+    try {
+      payload = await response.json()
+    } catch {
+      payload = null
+    }
+    if (response.status === 401 && onUnauthorized) onUnauthorized()
+    throw normalizeError(response.status, payload)
+  }
+
+  if (cfg.responseType === 'text') return (await response.text()) as unknown as T
+
+  const text = await response.text()
+  if (!text) return null as unknown as T
+  try {
+    return JSON.parse(text) as T
+  } catch {
+    return text as unknown as T
+  }
+}
+
+/**
+ * 对外暴露的请求器。
+ * 保留 Get / Post 的方法名，使接口聚合层（api/index.ts）的写法无需改动，
+ * 也为将来替换实现留出稳定边界。
+ */
+export const alovaInstance = {
+  Get: <T>(url: string, cfg?: RequestConfig) => request<T>('GET', url, undefined, cfg),
+  Post: <T>(url: string, body?: unknown, cfg?: RequestConfig) => request<T>('POST', url, body ?? {}, cfg),
+}
 
 export { BASE_URL, SIGN_ENABLED, sha256Hex, hmacHex }
