@@ -5,6 +5,9 @@ import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 interface Point {
   t: number
   price: number
+  /** 均价线取值；分时图有，K 线序列没有，因此可选 */
+  avg?: number
+  volume?: number
 }
 interface Bar {
   time: number | string
@@ -89,7 +92,10 @@ function drawMinute(ctx: CanvasRenderingContext2D, w: number, h: number) {
   ctx.fill()
 
   // 均价线
-  const avgs = props.minutes?.map((p) => p.avg).filter((a) => a > 0) ?? []
+  // 显式类型谓词：avg 可选，filter 后必须让 TS 知道结果里不再有 undefined
+  const avgs = (props.minutes ?? [])
+    .map((p) => p.avg)
+    .filter((a): a is number => typeof a === 'number' && a > 0)
   if (avgs.length) {
     ctx.beginPath()
     avgs.forEach((a, i) => {

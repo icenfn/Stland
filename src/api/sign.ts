@@ -22,20 +22,38 @@ export function toHex(buffer: ArrayBuffer): string {
   return out
 }
 
+/**
+ * WebCrypto 只在「安全上下文」可用：https、localhost、file 之外，
+ * 部分 WebView 的 http 源上 `crypto.subtle` 直接是 undefined。
+ * 若不显式检查，签名会在 beforeRequest 里抛异常 —— 表现为**所有**请求失败，
+ * 而且错误信息与网络无关，极难定位。这里提前失败并给出可操作的提示。
+ */
+function requireSubtle(): SubtleCrypto {
+  const c = globalThis.crypto
+  if (!c || !c.subtle) {
+    throw new Error(
+      '当前页面不是安全上下文（非 https / localhost），无法计算请求签名。' +
+        '请在 src/config/app.config.json 中把 api.signature.enabled 设为 false，' +
+        '或改用 https 访问服务端。',
+    )
+  }
+  return c.subtle
+}
+
 export async function sha256Hex(text: string): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', encoder.encode(text))
+  const digest = await requireSubtle().digest('SHA-256', encoder.encode(text))
   return toHex(digest)
 }
 
 export async function hmacHex(key: string, message: string): Promise<string> {
-  const cryptoKey = await crypto.subtle.importKey(
+  const cryptoKey = await requireSubtle().importKey(
     'raw',
     encoder.encode(key),
     { name: 'HMAC', hash: 'SHA-256' },
     false,
     ['sign'],
   )
-  const sig = await crypto.subtle.sign('HMAC', cryptoKey, encoder.encode(message))
+  const sig = await requireSubtle().sign('HMAC', cryptoKey, encoder.encode(message))
   return toHex(sig)
 }
 

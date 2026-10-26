@@ -8,24 +8,43 @@
  * v3 的适配器入口是 `alova/fetch`（旧版 `alova/GlobalFetch` 已移除，
  * 误用会直接让 Vite 报 Missing specifier 而构建失败）。
  *
+ * 服务端地址与签名密钥统一来自 src/config（见 src/config/app.config.json），
+ * 这样「这个包连的是哪台服务器」在代码里可追溯，而不是藏在构建命令行里。
+ *
  * 安全设计（与服务端 app/security.py 逐字节对应，纯函数见 api/sign.ts）：
  *   签名原文 = METHOD \n PATH \n TS \n NONCE \n SHA256(BODY) \n USER_ID
  *   X-Stland-Sign = HMAC-SHA256(共享密钥, 签名原文) 十六进制
  *   1) 篡改防护：改动请求体或路径都会使签名失效；
  *   2) 重放防护：时间戳窗口 + nonce 去重由服务端保证；
  *   3) 会话绑定：user_id 参与签名，令牌与请求不可分离盗用。
- *
- * 密钥来自构建期环境变量（CI Secret 注入），不硬编码。
  */
 import { createAlova } from 'alova'
 import VueHook from 'alova/vue'
 import adapterFetch from 'alova/fetch'
+import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
 import { signRequest } from './sign'
+import { apiConfig } from '@/config'
 
-const RAW_BASE = (import.meta.env.VITE_API_BASE as string) || 'http://127.0.0.1:8999'
-export const BASE_URL = RAW_BASE.replace(/\/+$/, '')
-const SIGN_SECRET = (import.meta.env.VITE_API_SIGN_SECRET as string) || 'dev-sign-secret-stland'
-export const SIGN_ENABLED = String(import.meta.env.VITE_API_SIGNATURE ?? 'true') !== 'false'
+/**
+ * 传输通道选择。
+ *
+ * 在 Tauri 里必须走原生 HTTP（Rust/reqwest），不能用 WebView 的 fetch：
+ * 1) 混合内容 —— APK 内页面源是 http://tauri.localhost 或自定义 scheme，
+ *    向 http://139.196.225.114:8999 发请求会被 Android WebView 拦截；
+ * 2) CORS —— 服务端未对 WebView 源开放跨域头，预检直接失败；
+ * 3) cookie/证书策略差异 —— 原生通道行为与服务端预期一致。
+ *
+ * 浏览器里（npm run dev 预览）没有 Tauri 运行时，退回全局 fetch。
+ * 判定用 __TAURI_INTERNALS__：这是 Tauri 2 注入的稳定标记，
+ * 比判断 userAgent 可靠（后者在有 WebView 调试代理时会误判）。
+ */
+const inTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
+
+export const transport = inTauri ? 'tauri' : 'browser'
+
+export const BASE_URL = apiConfig.baseUrl
+const SIGN_SECRET = apiConfig.signature.secret
+export const SIGN_ENABLED = apiConfig.signature.enabled
 
 export const TOKEN_KEY = 'stland.access_token'
 export const USER_KEY = 'stland.user'
@@ -74,8 +93,9 @@ export function setUnauthorizedHandler(fn: () => void) {
 export const alovaInstance = createAlova({
   baseURL: BASE_URL,
   statesHook: VueHook,
-  requestAdapter: adapterFetch(),
-  timeout: 15000,
+  // customFetch 让 Alova 复用我们的通道选择，而不必 fork 整个适配器
+  requestAdapter: adapterFetch(inTauri ? { customFetch: tauriFetch as unknown as typeof fetch } : {}),
+  timeout: apiConfig.timeoutMs,
   // 行情/账户必须实时：关闭 GET 默认的 5 分钟缓存
   cacheFor: { GET: 0, POST: 0 },
 
@@ -128,9 +148,12 @@ export const alovaInstance = createAlova({
       }
     },
     onError: (err: any) => {
-      // 网络层错误（断网 / 超时 / 跨域）在这里补齐可读文案
+      // 网络层错误（断网 / 超时 / 明文 HTTP 被系统拦截）在这里补齐可读文案，
+      // 并把当前服务器地址带进提示，避免用户面对一句没有上下文的「网络错误」。
       if (err?.code === 'NETWORK_ERROR' || err?.name === 'TypeError') {
-        const e = new Error('无法连接服务端，请确认 Stland-server 已启动') as ApiError
+        const e = new Error(
+          `无法连接服务端（${BASE_URL}），请确认服务器已启动且网络可达`,
+        ) as ApiError
         e.code = 'NETWORK_ERROR'
         throw e
       }
