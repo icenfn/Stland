@@ -33,3 +33,7 @@ src-tauri/Cargo.lock
 *.jks
 *.keystore
 keystore.properties
+
+# Python 编译缓存
+__pycache__/
+*.pyc
