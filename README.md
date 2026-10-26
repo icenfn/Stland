@@ -58,11 +58,31 @@ X-Stland-Sign = HMAC-SHA256(共享密钥, 签名原文)
 
 `src/components/NaiveBridge.vue` 在 Provider 子树内取到 `useMessage` / `useDialog` 并交给 `src/naive.ts` 的 `feedback`，于是 store、api 层、路由守卫等非组件代码也能统一走 Naive UI 的提示与二次确认（`window.confirm` 已全部替换）。
 
-连接服务端：复制 `.env.example` 为 `.env`，把 `VITE_API_BASE` 指向服务端地址。
+## 连接服务端：配置文件
 
-```bash
-VITE_API_BASE=http://127.0.0.1:8999
+「这个客户端连哪台服务器」写在仓库内的 `src/config/app.config.json`，由 `src/config/index.ts` 统一读取并对外导出 `apiConfig`。不再是只藏在构建机环境变量里的隐式约定。
+
+```json
+{
+  "app": { "name": "Stland 股岛", "version": "1.0.0" },
+  "api": {
+    "baseUrl": "http://139.196.225.114:8999",
+    "timeoutMs": 15000,
+    "signature": { "enabled": false, "secret": "dev-sign-secret-stland" },
+    "polling": { "marketMs": 1500, "accountMs": 5000 }
+  }
+}
 ```
+
+优先级：`VITE_API_BASE` 环境变量 **>** `app.config.json` 的 `api.baseUrl`。环境变量仅作临时覆盖（CI / 本地联调），默认地址一律以配置文件为准，便于追溯「这个包连的是哪台机器」。
+
+三个需要留意的点：
+
+- `signature.enabled`：服务端 `STLAND_SIGNATURE_REQUIRED=false` 时置 `false`，否则每个请求都要带 `X-Stland-Sign`，密钥不一致会导致写接口全部返回 `400 BAD_SIGNATURE`。
+- `timeoutMs`：超时后抛 `ApiError(timeout)`，页面提示「网络超时」而不是无限转圈。
+- 「我的」页展示 `serverLabel`（去掉协议头的地址），方便用户自查当前连的是哪台服务器。
+
+`.env.example` 中所有变量均已注释，属可选覆盖项。
 
 ## 构建 APK（arm64）
 
