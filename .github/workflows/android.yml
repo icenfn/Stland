@@ -239,12 +239,15 @@ jobs:
           python3 -m pip install --quiet --disable-pip-version-check pillow
           python3 scripts/verify_apk_icon.py "${{ steps.apk.outputs.path }}"
 
-      # 明文放行配置也要实证落到包里，而不只是改了源工程文件
+      # 明文放行配置也要实证落到包里，而不只是改了源工程文件。
+      # 传入 aapt2：二进制清单里资源引用存的是 ID 整数，只有解析元素树才判断得准。
       - name: Verify APK cleartext config
+        env:
+          AAPT2: ${{ steps.sdk.outputs.build_tools }}/aapt2
         run: |
           set -euo pipefail
           APK="${{ steps.apk.outputs.path }}"
-          python3 scripts/verify_apk_network.py "$APK"
+          python3 scripts/verify_apk_network.py "$APK" --aapt2="$AAPT2"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
