@@ -1,27 +1,30 @@
 [package]
 name = "stland"
 version = "1.0.0"
-description = "Stland 股岛 —— 移动端交易终端"
-authors = ["icenfn"]
+description = "Stland 股岛 —— 自包含股票交易系统客户端"
+authors = ["Stland"]
 edition = "2021"
-rust-version = "1.77"
 
-# 移动端产物统一编译为 cdylib，桌面端为可执行/rlib
 [lib]
 name = "stland_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
-tauri-build = { version = "2.7.4", features = [] }
+tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
-tauri-plugin-os = "2.4.0"
-# 原生 HTTP 通道：WebView 里向 http:// 发请求会被 Android 的混合内容策略
-# 与 CORS 拦截；plugin-http 让请求走 Rust 侧 (reqwest)，不受页面源限制。
-tauri-plugin-http = "2"
+tauri-plugin-os = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+[target.'cfg(target_os = "android")'.dependencies]
+# 通过 JNI 读取 Android 状态栏/导航栏尺寸，实现沉浸式布局
+jni = "0.21"
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
 
 [profile.release]
 codegen-units = 1

@@ -7,7 +7,6 @@ import { reactive, computed } from 'vue'
 import { useIntervalFn, useDocumentVisibility } from '@vueuse/core'
 import { marketApi } from '@/api'
 import type { Overview, Quote } from '@/api/types'
-import { apiConfig } from '@/config'
 
 const state = reactive({
   overview: null as Overview | null,
@@ -65,7 +64,7 @@ export function useMarket() {
   }
 
   /** 启动轮询（幂等）。页面不可见时自动暂停，回到前台立即刷新。 */
-  function start(interval = apiConfig.polling.marketMs) {
+  function start(interval = 1500) {
     if (polling) return
     polling = true
     void refreshAll()

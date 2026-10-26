@@ -1,21 +1,14 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Stland 默认能力：核心接口 + OS 信息 + 白名单域的 HTTP 请求",
+  "description": "Stland 默认能力：仅开放必要的核心与 OS 信息接口",
   "windows": ["main"],
   "permissions": [
     "core:default",
     "core:window:allow-show",
     "core:window:allow-set-decorations",
     "core:window:allow-scale-factor",
-    "os:default",
-    {
-      "identifier": "http:default",
-      "allow": [
-        { "url": "http://139.196.225.114:8999/*" },
-        { "url": "http://localhost:8999/*" },
-        { "url": "http://127.0.0.1:8999/*" }
-      ]
-    }
+    "core:webview:allow-internal-toggle-devtools",
+    "os:default"
   ]
 }

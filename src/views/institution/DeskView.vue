@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import { apiConfig } from '@/config'
 /** 机构交易台：持仓集中度监控 + 批量下单 + 融资额度，仅机构角色可见 */
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
@@ -48,7 +47,7 @@ async function submitBatch() {
   }
 }
 
-useIntervalFn(refresh, apiConfig.polling.accountMs)
+useIntervalFn(refresh, 5000)
 onMounted(refresh)
 </script>
 

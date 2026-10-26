@@ -2,21 +2,7 @@
 /** 应用根组件：Naive UI 主题与 Provider 装配 + 全局布局 */
 import { computed } from 'vue'
 import { useRoute } from 'vue-router'
-import {
-  // 必须显式引入这三个 Provider 组件。
-  // Naive UI 不做全局组件注册，模板里的 <n-config-provider> 等标签若未 import，
-  // 会被当成未知元素原样渲染，其内部不建立任何 provide/inject 上下文；
-  // 于是子组件 NaiveBridge 里的 useMessage() 立刻抛
-  // "No outer <n-message-provider /> founded"，setup 阶段报错让整棵组件树挂载失败，
-  // 页面只剩 body 深色背景 —— 这正是「打开即黑屏」的根因。
-  NConfigProvider,
-  NMessageProvider,
-  NDialogProvider,
-  darkTheme,
-  zhCN,
-  dateZhCN,
-  type GlobalThemeOverrides,
-} from 'naive-ui'
+import { darkTheme, zhCN, dateZhCN, type GlobalThemeOverrides } from 'naive-ui'
 import { useImmersiveBar } from './composables/useImmersive'
 import TabBar from './components/TabBar.vue'
 import NaiveBridge from './components/NaiveBridge.vue'

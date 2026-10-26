@@ -6,14 +6,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: '版本号（仅用于 workflow_dispatch 时命名）'
+        description: '版本号（用于 APK 文件名）'
         required: false
         default: '1.0.0'
-      publish_release:
-        description: '构建后是否发布/更新 Release'
-        type: boolean
-        required: false
-        default: false
 
 permissions:
   contents: write
@@ -34,8 +29,6 @@ jobs:
       # "Warning: Failed to find package 'tools'" 直接失败。
       ANDROID_HOME: /usr/local/lib/android/sdk
       ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
-      # 产物名固定为 Stland-arm64.apk（不带版本号与 commit 后缀）
-      APK_NAME: Stland-arm64.apk
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -56,6 +49,7 @@ jobs:
         id: sdk
         run: |
           SDK="$ANDROID_HOME"
+          echo "SDK root: $SDK"
           NDK_DIR=""
           [ -d "$SDK/ndk" ] && NDK_DIR=$(ls -d "$SDK"/ndk/*/ 2>/dev/null | sort -V | tail -1)
           if [ -z "$NDK_DIR" ] && [ -d "$SDK/ndk-bundle" ]; then NDK_DIR="$SDK/ndk-bundle/"; fi
@@ -93,9 +87,6 @@ jobs:
       - name: Install Tauri CLI
         run: npm install -D @tauri-apps/cli@^2
 
-      - name: Typecheck
-        run: npm run typecheck || echo "::warning::typecheck 有告警，不阻断打包"
-
       - name: Build web assets
         run: npm run build:web
 
@@ -114,26 +105,13 @@ jobs:
             || { echo "::error::Android 脚手架未生成"; find src-tauri/gen -maxdepth 6 -type d | head -30; exit 1; }
           ls src-tauri/gen/android
 
-      # 放行明文 HTTP：默认连的是 http://139.196.225.114:8999（自建服务端，无 TLS）。
-      # Android 9+ 默认拦截明文请求，未放行时表现为「页面能开、登录永远连不上」，
-      # 且 WebView 内看不到任何有效错误。
-      - name: Patch Android cleartext HTTP
-        run: python3 scripts/patch_android_network.py
-
-      - name: Verify app icons
-        run: |
-          for f in src-tauri/icons/icon.png src-tauri/icons/icon.ico src-tauri/icons/icon.icns; do
-            test -f "$f" || { echo "::error::缺少图标 $f（仍是 Tauri 默认图标）"; exit 1; }
-          done
-          ls src-tauri/icons/icons/android* 2>/dev/null || ls src-tauri/icons | head -30
-          echo "图标校验通过"
-
       - name: Build arm64 APK
         env:
           NDK_HOME: ${{ steps.sdk.outputs.ndk_home }}
         run: |
           # android build 没有 --ci 选项（仅 init 有），误传会报
           # "unexpected argument '--ci' found"。
+          # 产出的 release APK 未签名，需在下一步 zipalign + apksigner 处理。
           npx tauri android build --apk --target aarch64
 
       - name: Align and sign APK
@@ -144,15 +122,17 @@ jobs:
           KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
           STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
           BUILD_TOOLS: ${{ steps.sdk.outputs.build_tools }}
+          VER: ${{ github.event.inputs.version || '1.0.0' }}
         run: |
           set -euo pipefail
+          SHA7=$(echo "$GITHUB_SHA" | cut -c1-7)
 
           SRC=$(find src-tauri/gen/android -path "*release*" -name "*.apk" -type f | head -1)
           [ -n "$SRC" ] || SRC=$(find src-tauri/gen/android -name "*.apk" -type f | head -1)
           [ -n "$SRC" ] || { echo "::error::未找到 APK 产物"; find src-tauri/gen/android -name "*.apk" | head; exit 1; }
           echo "源 APK: $SRC ($(du -h "$SRC" | cut -f1))"
 
-          # 依据实际打包的 ABI 决定标注，避免把 universal 包误标成 arm64 单架构
+          # 依据实际打包的 ABI 决定文件名，避免把 universal 包误标成 arm64 单架构
           ABIS=$(unzip -l "$SRC" | awk '{print $4}' | grep -oE '^lib/[^/]+/' | cut -d/ -f2 | sort -u | tr '\n' ' ')
           echo "包含 ABI: ${ABIS:-<无 native lib>}"
           ARCH="universal"
@@ -165,21 +145,28 @@ jobs:
           if [ -n "${KEYSTORE_BASE64:-}" ]; then
             echo "使用仓库 Secrets 中的发布密钥签名"
             echo "$KEYSTORE_BASE64" | base64 -d > "$WORK/release.jks"
-            KS="$WORK/release.jks"; ALIAS="$KEY_ALIAS"
-            KSPASS="pass:$STORE_PASSWORD"; KEYPASS="pass:$KEY_PASSWORD"
+            KS="$WORK/release.jks"
+            ALIAS="$KEY_ALIAS"
+            KSPASS="pass:$STORE_PASSWORD"
+            KEYPASS="pass:$KEY_PASSWORD"
+            SUFFIX=""
           else
-            # 未签名 APK 无法安装，直接产出等于交付废件。
-            # 现场生成一次性调试密钥完成签名，并在产物名与日志里明确标注。
-            echo "::warning::未配置 ANDROID_KEYSTORE_BASE64，改用一次性调试密钥签名（不可对外分发）"
-            KS="$WORK/debug.jks"; ALIAS="stland-debug"
-            KSPASS="pass:stlanddebug"; KEYPASS="pass:stlanddebug"
+            # 无发布密钥时不能用未签名包冒充产物（它无法安装）。
+            # 这里现场生成一次性调试密钥完成签名，文件名带 -debug 明确标识不可分发。
+            echo "::warning::未配置 ANDROID_KEYSTORE_BASE64，改用一次性调试密钥签名（产物不可对外分发）"
+            KS="$WORK/debug.jks"
+            ALIAS="stland-debug"
+            KSPASS="pass:stlanddebug"
+            KEYPASS="pass:stlanddebug"
+            SUFFIX="-debug"
             keytool -genkeypair -v -keystore "$KS" -alias "$ALIAS" \
               -keyalg RSA -keysize 2048 -validity 10000 \
               -storepass stlanddebug -keypass stlanddebug \
               -dname "CN=Stland Debug,O=Stland,C=CN" > /dev/null 2>&1
           fi
 
-          # 若 Gradle 已签名（v1/v2），zipalign 会破坏原签名；已签名则直接沿用
+          # 若 Gradle 已签名（v1/v2），zipalign 会破坏原签名。
+          # 已签名则原样使用，未签名才对齐后重签。
           if "$BUILD_TOOLS/apksigner" verify "$SRC" > /dev/null 2>&1; then
             echo "检测到 Gradle 已完成签名，直接使用原产物"
             cp "$SRC" "$WORK/out.apk"
@@ -187,50 +174,42 @@ jobs:
             echo "未签名产物，执行 zipalign + apksigner"
             "$BUILD_TOOLS/zipalign" -f -p 4 "$SRC" "$WORK/aligned.apk"
             "$BUILD_TOOLS/apksigner" sign \
-              --ks "$KS" --ks-key-alias "$ALIAS" \
-              --ks-pass "$KSPASS" --key-pass "$KEYPASS" \
-              --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true \
-              --out "$WORK/out.apk" "$WORK/aligned.apk"
+              --ks "$KS" \
+              --ks-key-alias "$ALIAS" \
+              --ks-pass "$KSPASS" \
+              --key-pass "$KEYPASS" \
+              --v1-signing-enabled true \
+              --v2-signing-enabled true \
+              --v3-signing-enabled true \
+              --out "$WORK/out.apk" \
+              "$WORK/aligned.apk"
           fi
 
-          cp "$WORK/out.apk" "dist-apk/$APK_NAME"
-          echo "path=dist-apk/$APK_NAME" >> "$GITHUB_OUTPUT"
-          echo "arch=$ARCH" >> "$GITHUB_OUTPUT"
+          NAME="Stland-${VER}-${ARCH}${SUFFIX}-${SHA7}.apk"
+          cp "$WORK/out.apk" "dist-apk/$NAME"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "path=dist-apk/$NAME" >> "$GITHUB_OUTPUT"
           ls -lh dist-apk
 
-          echo "=== 签名核验（失败即中断）==="
-          "$BUILD_TOOLS/apksigner" verify --print-certs "dist-apk/$APK_NAME"
-
+          echo "=== 签名核验（失败则中断）==="
+          "$BUILD_TOOLS/apksigner" verify --print-certs "dist-apk/$NAME"
           echo "=== 产物信息 ==="
-          file "dist-apk/$APK_NAME"
-          if [ "$ARCH" != "arm64" ]; then
-            echo "::warning::实际 ABI 为 ${ABIS}，产物名仍按约定固定为 $APK_NAME"
-          fi
+          file "dist-apk/$NAME"
+          unzip -l "dist-apk/$NAME" | tail -3
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Stland-arm64-apk
+          name: Stland-apk
           path: ${{ steps.apk.outputs.path }}
           if-no-files-found: error
           retention-days: 30
 
-      # tag 推送（v*）或手动勾选 publish_release 时发布到 Release
-      - name: Publish release asset
-        if: startsWith(github.ref, 'refs/tags/v') || inputs.publish_release == true
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('v{0}', inputs.version) }}
-          name: Stland ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('v{0}', inputs.version) }}
           files: ${{ steps.apk.outputs.path }}
+          name: Stland ${{ github.ref_name }}
           draft: false
-          prerelease: false
           generate_release_notes: true
-          body: |
-            Stland 股岛 v1.0.0 · Android arm64 客户端
-
-            - 产物：`Stland-arm64.apk`（arm64-v8a）
-            - 服务端地址：在 `src/config/app.config.json` 的 `api.baseUrl` 配置
-            - 安装：`adb install -r Stland-arm64.apk`
-
-            行情由本地随机过程模拟生成，与真实标的价格无关，不构成投资建议。

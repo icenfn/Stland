@@ -24,7 +24,7 @@ const rankList = computed(() => {
 const indexMinutes = computed(() => state.overview?.index_minutes ?? [])
 const totalAmount = computed(() => state.overview?.stats.total_amount ?? 0)
 
-onMounted(() => market.start())
+onMounted(() => market.start(1500))
 onBeforeUnmount(() => market.stop())
 </script>
 
