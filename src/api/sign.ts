@@ -13,6 +13,23 @@
 
 const encoder = new TextEncoder()
 
+/**
+ * WebCrypto 只在安全上下文（https / localhost / file）可用。
+ * 本应用的服务端是明文 http://，在部分 Android WebView 里 window.crypto.subtle 会是
+ * undefined，直接调用会抛一个含义模糊的 TypeError。
+ * 这里提前判定并抛出可操作的提示，而不是让用户看到「请求失败」却不知为何。
+ */
+function requireSubtle(): SubtleCrypto {
+  const subtle = globalThis.crypto?.subtle
+  if (!subtle) {
+    throw new Error(
+      '当前环境不支持 WebCrypto（crypto.subtle 不可用），无法生成请求签名。' +
+        '请在配置中关闭 api.signature.enabled，或改用 https 访问服务端。',
+    )
+  }
+  return subtle
+}
+
 export function toHex(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer)
   let out = ''
@@ -23,19 +40,19 @@ export function toHex(buffer: ArrayBuffer): string {
 }
 
 export async function sha256Hex(text: string): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', encoder.encode(text))
+  const digest = await requireSubtle().digest('SHA-256', encoder.encode(text))
   return toHex(digest)
 }
 
 export async function hmacHex(key: string, message: string): Promise<string> {
-  const cryptoKey = await crypto.subtle.importKey(
+  const cryptoKey = await requireSubtle().importKey(
     'raw',
     encoder.encode(key),
     { name: 'HMAC', hash: 'SHA-256' },
     false,
     ['sign'],
   )
-  const sig = await crypto.subtle.sign('HMAC', cryptoKey, encoder.encode(message))
+  const sig = await requireSubtle().sign('HMAC', cryptoKey, encoder.encode(message))
   return toHex(sig)
 }
 

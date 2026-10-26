@@ -1,34 +1,47 @@
 /**
  * HTTP 基础设施：AlovaJS v3 实例 + 全局请求签名。
  *
- * 为什么是这一层做签名，而不是每个接口各写一遍：
- * Alova 的 `beforeRequest` 是唯一的请求出口，令牌注入、HMAC 签名、401 统一登出
- * 全部收敛在这里，业务层（api/index.ts）只声明「请求什么」，不关心「怎么证明身份」。
+ * 两处关键设计：
  *
- * v3 的适配器入口是 `alova/fetch`（旧版 `alova/GlobalFetch` 已移除，
- * 误用会直接让 Vite 报 Missing specifier 而构建失败）。
+ * 1) 地址与超时不再写死在代码里，统一来自 src/config（app.config.json）。
+ *    这样「连哪台服务器」是可审计、可 diff 的一行配置，而不是散落在
+ *    import.meta.env 里的构建期常量。
  *
- * 安全设计（与服务端 app/security.py 逐字节对应，纯函数见 api/sign.ts）：
- *   签名原文 = METHOD \n PATH \n TS \n NONCE \n SHA256(BODY) \n USER_ID
+ * 2) 在 Tauri 壳里走原生 HTTP 通道（tauri-plugin-http），而不是直接用
+ *    WebView 的 fetch。原因是 Android WebView 的两个硬限制：
+ *      · 页面源是 https://tauri.localhost，向 http:// 发请求属于混合内容，被拦；
+ *      · 即使放行，跨源请求还要过 CORS，而服务端未开 CORS 头。
+ *    原生通道由 Rust 侧发请求，绕开这两条浏览器策略；
+ *    明文 HTTP 的放行则单独由 network_security_config.xml 按主机白名单管控。
+ *
+ * 签名（与服务端 app/security.py 逐字节对应，纯函数见 api/sign.ts）：
+ *   签名原文 = METHOD \
+ PATH \
+ TS \
+ NONCE \
+ SHA256(BODY) \
+ USER_ID
  *   X-Stland-Sign = HMAC-SHA256(共享密钥, 签名原文) 十六进制
- *   1) 篡改防护：改动请求体或路径都会使签名失效；
- *   2) 重放防护：时间戳窗口 + nonce 去重由服务端保证；
- *   3) 会话绑定：user_id 参与签名，令牌与请求不可分离盗用。
- *
- * 密钥来自构建期环境变量（CI Secret 注入），不硬编码。
  */
 import { createAlova } from 'alova'
 import VueHook from 'alova/vue'
 import adapterFetch from 'alova/fetch'
 import { signRequest } from './sign'
+import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
+import { apiConfig } from '@/config'
 
-const RAW_BASE = (import.meta.env.VITE_API_BASE as string) || 'http://127.0.0.1:8999'
-export const BASE_URL = RAW_BASE.replace(/\/+$/, '')
-const SIGN_SECRET = (import.meta.env.VITE_API_SIGN_SECRET as string) || 'dev-sign-secret-stland'
-export const SIGN_ENABLED = String(import.meta.env.VITE_API_SIGNATURE ?? 'true') !== 'false'
+export const BASE_URL = apiConfig.baseUrl
+export const SIGN_ENABLED = apiConfig.signEnabled
+const SIGN_SECRET = apiConfig.signSecret
+const TIMEOUT = apiConfig.timeoutMs
 
 export const TOKEN_KEY = 'stland.access_token'
 export const USER_KEY = 'stland.user'
+
+/** 是否运行在 Tauri 原生壳内（浏览器预览时为 false） */
+export const IS_TAURI =
+  typeof window !== 'undefined' &&
+  '__TAURI_INTERNALS__' in (window as unknown as Record<string, unknown>)
 
 export interface ApiError extends Error {
   code?: string
@@ -71,11 +84,22 @@ export function setUnauthorizedHandler(fn: () => void) {
   onUnauthorized = fn
 }
 
+/**
+ * 选择传输适配器（同步构造）。
+ *
+ * 原生壳内用 tauri-plugin-http 的 fetch；浏览器里退回标准 fetch。
+ * 这里刻意不做动态 import：Alova 的 requestAdapter 需要同步拿到适配器对象，
+ * 若返回 Promise 会让后续 response 的类型推断全部退化成 unknown。
+ * 而插件的顶层 import 只是绑定函数，不触发任何原生调用，在浏览器里也安全。
+ */
+const customFetch = IS_TAURI ? (tauriFetch as unknown as typeof fetch) : undefined
+const requestAdapter = customFetch ? adapterFetch({ customFetch }) : adapterFetch()
+
 export const alovaInstance = createAlova({
   baseURL: BASE_URL,
   statesHook: VueHook,
-  requestAdapter: adapterFetch(),
-  timeout: 15000,
+  requestAdapter,
+  timeout: TIMEOUT,
   // 行情/账户必须实时：关闭 GET 默认的 5 分钟缓存
   cacheFor: { GET: 0, POST: 0 },
 
@@ -128,9 +152,12 @@ export const alovaInstance = createAlova({
       }
     },
     onError: (err: any) => {
-      // 网络层错误（断网 / 超时 / 跨域）在这里补齐可读文案
+      // 网络层错误（断网 / 超时 / 跨域）在这里补齐可读文案，
+      // 并把当前服务端地址带上 —— 否则用户只看到「连不上」，无从判断是网络还是地址配错。
       if (err?.code === 'NETWORK_ERROR' || err?.name === 'TypeError') {
-        const e = new Error('无法连接服务端，请确认 Stland-server 已启动') as ApiError
+        const e = new Error(
+          `无法连接服务端（${BASE_URL}），请确认 Stland-server 已启动且手机与服务器网络可达`,
+        ) as ApiError
         e.code = 'NETWORK_ERROR'
         throw e
       }

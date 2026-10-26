@@ -5,6 +5,8 @@ import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 interface Point {
   t: number
   price: number
+  /** 分时均价；K 线数据没有该字段，因此可选 */
+  avg?: number
 }
 interface Bar {
   time: number | string
@@ -89,7 +91,10 @@ function drawMinute(ctx: CanvasRenderingContext2D, w: number, h: number) {
   ctx.fill()
 
   // 均价线
-  const avgs = props.minutes?.map((p) => p.avg).filter((a) => a > 0) ?? []
+  // 均价字段是可选的（K 线数据没有），过滤后用类型守卫收窄成 number[]，
+  // 否则后续 yOf(a) 会被推断为 number | undefined
+  const avgs: number[] =
+    props.minutes?.map((p) => p.avg).filter((a): a is number => typeof a === 'number' && a > 0) ?? []
   if (avgs.length) {
     ctx.beginPath()
     avgs.forEach((a, i) => {

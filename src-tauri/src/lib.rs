@@ -33,6 +33,10 @@ fn system_bar_height() -> f64 {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_os::init())
+        // 原生 HTTP：前端通过 @tauri-apps/plugin-http 的 fetch 调用，
+        // 实际请求由 Rust 侧发出，避开 WebView 的混合内容与 CORS 限制。
+        // 具体允许访问哪些地址由 capabilities/default.json 里的 scope 白名单限定。
+        .plugin(tauri_plugin_http::init())
         .setup(|app| {
             if let Some(window) = app.get_webview_window("main") {
                 let h = system_bar_height();

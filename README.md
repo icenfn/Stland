@@ -58,20 +58,89 @@ X-Stland-Sign = HMAC-SHA256(共享密钥, 签名原文)
 
 `src/components/NaiveBridge.vue` 在 Provider 子树内取到 `useMessage` / `useDialog` 并交给 `src/naive.ts` 的 `feedback`，于是 store、api 层、路由守卫等非组件代码也能统一走 Naive UI 的提示与二次确认（`window.confirm` 已全部替换）。
 
-连接服务端：复制 `.env.example` 为 `.env`，把 `VITE_API_BASE` 指向服务端地址。
+## 与服务端的连接配置
+
+「这个客户端连哪台服务器」写在 `src/config/app.config.json`，由 `src/config/index.ts` 统一读取并导出 `apiConfig`：
+
+```json
+{
+  "api": {
+    "baseUrl": "http://139.196.225.114:8999",
+    "timeoutMs": 15000,
+    "signature": { "enabled": false, "secret": "dev-sign-secret-stland" },
+    "polling": { "marketMs": 1500, "accountMs": 5000 }
+  },
+  "android": {
+    "cleartextHosts": ["139.196.225.114", "localhost", "127.0.0.1", "10.0.2.2"]
+  }
+}
+```
+
+为什么不继续用 `VITE_API_BASE`：`VITE_*` 是构建期常量，打进 bundle 就改不了，换个服务器就得出新包；
+而「连哪台机器」恰恰是最常改的一项。因此默认值放配置文件（可 diff、可审计），环境变量降级为临时覆盖。
+
+优先级：`VITE_*` 环境变量 **>** `app.config.json` **>** 内置兜底。不设任何变量也能正常构建。
+
+三个易踩的点：
+
+- `signature.enabled`：服务端 `STLAND_SIGNATURE_REQUIRED=false` 时必须为 `false`，否则每个请求都要带
+  `X-Stland-Sign`，密钥不一致会导致写接口全部 `400 BAD_SIGNATURE`。
+- 签名依赖 WebCrypto，而 WebCrypto 只在安全上下文（https / localhost / file）可用。
+  纯 http 源的 WebView 里 `crypto.subtle` 可能为 `undefined`，`src/api/sign.ts` 会提前抛出可操作提示，
+  而不是让用户看到含义模糊的请求失败。
+- `android.cleartextHosts` 与 `scripts/patch_android_network.py` 的白名单保持一致：
+  只对这些主机放行明文 HTTP，其余仍按系统默认禁止。
+
+「我的」页会显示去掉协议头的服务端地址，用户能直接看出当前包连的是哪台机器。
+
+## 网络：为什么走原生 HTTP
+
+Android WebView 的页面源是 `https://tauri.localhost`，向 `http://` 发请求属于**混合内容**会被拦；
+即便放行，跨源还要过 CORS，而自建服务端未开 CORS 头。因此客户端在 Tauri 壳内改用
+`@tauri-apps/plugin-http`（请求由 Rust 侧发出），浏览器预览时自动退回标准 `fetch`。
+
+明文放行单独由 `scripts/patch_android_network.py` 生成的 `network_security_config.xml` 按主机白名单管控，
+而不是全局 `usesCleartextTraffic="true"`。
+
+## 应用图标
+
+图标由 `scripts/gen_icon.py` 程序化生成（1024×1024 源图），再交给 `tauri icon` 派生全平台尺寸：
 
 ```bash
-VITE_API_BASE=http://127.0.0.1:8999
+python3 scripts/gen_icon.py src-tauri/icons/icon-source.png
+npx tauri icon src-tauri/icons/icon-source.png -o src-tauri/icons
 ```
+
+**安全区**是这里的关键。Android 自适应图标在 108dp 画布上会被启动器按圆形/方圆/水滴等形状再裁一次，
+各形状都能完整看到的是中心直径 66dp 的圆（约画布边长 61%）。由此两条硬约束：
+
+1. 底必须**满幅**。画「圆角矩形底」的话，系统再裁一刀，四角会露透明缺口。
+2. 图形必须落在中心安全圆内，否则箭头尖或 K 线影线会被裁掉。
+
+脚本不靠人工估点：它把图形画在独立图层，按 alpha 掩膜实测最远半径，超出就等比缩放到安全圆内，
+并断言最终半径 ≤ 边长 30%，越界直接失败退出。改设计也不会悄悄越界。
+
+> 另有一处必须注意：`tauri android init` 生成脚手架时用的是**模板自带图标**，既不看
+> `tauri.conf.json` 的 `bundle.icon`，也不看 `src-tauri/icons/android`。所以必须在 init 之后、
+> build 之前执行 `scripts/apply_android_icons.py` 把图标覆盖进 `gen/android`，否则 `tauri icon`
+> 跑得再成功，APK 里仍是 Tauri 默认 logo。
 
 ## 构建 APK（arm64）
 
 ```bash
-npm run android:init    # 首次：生成 src-tauri/gen/android
-npm run android:build   # 产出 app-universal-release.apk
+npm run android:init                          # 首次：生成 src-tauri/gen/android
+python3 scripts/apply_android_icons.py        # 把自定义图标覆盖进 gen/android（必做）
+python3 scripts/patch_android_network.py      # 放行自建服务端明文 HTTP
+npm run android:build                         # 产出 arm64 release APK
 ```
 
-CI 已内置同流程：`.github/workflows/android.yml` 在打 tag（`v*`）时自动构建并把 APK 附到 Release。
+CI 已内置同流程：`.github/workflows/android.yml` 在打 tag（`v*`）或手动触发时构建，
+产物名固定为 **`Stland-arm64.apk`** 并附到 Release。构建后还会做两道 APK 级实证：
+
+- `scripts/verify_apk_icon.py`：解包比对启动图标，确认不是 Tauri 默认图标；
+- `scripts/verify_apk_network.py`：确认 INTERNET 权限与 `networkSecurityConfig` 真的进了包。
+
+只查「文件存在」是不够的——上一次就是文件检查全绿、APK 里却是默认图标。
 
 ### 签名配置
 
@@ -95,7 +164,8 @@ tauri android build --apk  →  zipalign -p 4  →  apksigner sign (v1+v2+v3)  �
 | `ANDROID_STORE_PASSWORD` | keystore 口令 |
 
 缺失时工作流会**现场生成一次性调试密钥**完成签名（未签名 APK 无法安装，直接产出未签名包等于交付废件），
-产物名带 `-debug` 后缀并打印警告 —— 仅可直接安装，不可对外分发。
+日志与 Release 说明中会明确标注「调试签名，仅内测」；产物名仍固定为 `Stland-arm64.apk`，
+以保证下载链接长期稳定。
 
 本地生成一套自用密钥：
 

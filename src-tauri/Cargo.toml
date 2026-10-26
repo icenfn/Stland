@@ -15,6 +15,10 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-os = "2"
+# 原生 HTTP 通道。Android WebView 的页面源是 https://tauri.localhost，
+# 向 http:// 发请求属于混合内容会被拦；由 Rust 侧发请求可绕开该限制，
+# 明文放行则改由 network_security_config.xml 按主机白名单精确管控。
+tauri-plugin-http = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

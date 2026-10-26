@@ -1,0 +1,23 @@
+{
+  "$comment": "Stland 客户端运行期配置。改这里即可换服务器，无需重新打包前端（改完重新构建 APK 即可生效）。",
+  "app": {
+    "name": "Stland 股岛",
+    "version": "1.0.0"
+  },
+  "api": {
+    "baseUrl": "http://139.196.225.114:8999",
+    "timeoutMs": 15000,
+    "signature": {
+      "enabled": false,
+      "secret": "dev-sign-secret-stland"
+    },
+    "polling": {
+      "marketMs": 1500,
+      "accountMs": 5000
+    }
+  },
+  "android": {
+    "$comment": "Android 明文 HTTP 放行：仅对下列主机生效，不放行全局明文流量",
+    "cleartextHosts": ["139.196.225.114", "localhost", "127.0.0.1", "10.0.2.2"]
+  }
+}

@@ -6,9 +6,14 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: '版本号（用于 APK 文件名）'
+        description: '版本号（写入 Release 标题；产物名固定为 Stland-arm64.apk）'
         required: false
         default: '1.0.0'
+      publish_release:
+        description: '构建完成后发布到 GitHub Release'
+        required: false
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -16,6 +21,11 @@ permissions:
 concurrency:
   group: android-${{ github.ref }}
   cancel-in-progress: true
+
+env:
+  # 产物名固定，不带版本号/commit 后缀：每次构建都覆盖同一个文件名，
+  # 下载链接长期稳定，也符合「命名格式改成 Stland-arm64.apk」的要求。
+  APK_NAME: Stland-arm64.apk
 
 jobs:
   build-apk:
@@ -87,6 +97,9 @@ jobs:
       - name: Install Tauri CLI
         run: npm install -D @tauri-apps/cli@^2
 
+      - name: Typecheck
+        run: npx vue-tsc --noEmit
+
       - name: Build web assets
         run: npm run build:web
 
@@ -105,6 +118,31 @@ jobs:
             || { echo "::error::Android 脚手架未生成"; find src-tauri/gen -maxdepth 6 -type d | head -30; exit 1; }
           ls src-tauri/gen/android
 
+      # 必须在 init 之后、build 之前：init 用的是模板默认图标，
+      # 不覆盖的话打出来的 APK 里还是 Tauri 那个默认 logo。
+      - name: Apply app icons
+        run: python3 scripts/apply_android_icons.py
+
+      # Android 9+ 默认禁止明文 HTTP，服务端是自建 http://，必须按主机白名单放行，
+      # 否则请求在系统层就被拦掉，表现为「一直连不上」。
+      - name: Patch Android cleartext HTTP
+        run: python3 scripts/patch_android_network.py
+
+      - name: Verify app icons
+        run: |
+          for f in src-tauri/icons/icon.png src-tauri/icons/icon.ico src-tauri/icons/icon.icns; do
+            test -f "$f" || { echo "::error::缺少图标 $f"; exit 1; }
+          done
+          # 覆盖后再确认工程里的资源确实是我们那几张，
+          # 避免「脚本跑过但没落到 build 会读的目录」这种假成功
+          for d in mdpi hdpi xhdpi xxhdpi xxxhdpi; do
+            t="src-tauri/gen/android/app/src/main/res/mipmap-$d/ic_launcher.png"
+            test -f "$t" || { echo "::error::Android 工程缺少 $t"; exit 1; }
+            cmp -s "$t" "src-tauri/icons/android/mipmap-$d/ic_launcher.png" \
+              || { echo "::error::$t 与源图标不一致（未被覆盖）"; exit 1; }
+          done
+          echo "图标校验通过：5 个密度的 ic_launcher.png 均与仓库图标逐字节一致"
+
       - name: Build arm64 APK
         env:
           NDK_HOME: ${{ steps.sdk.outputs.ndk_home }}
@@ -122,21 +160,21 @@ jobs:
           KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
           STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
           BUILD_TOOLS: ${{ steps.sdk.outputs.build_tools }}
-          VER: ${{ github.event.inputs.version || '1.0.0' }}
         run: |
           set -euo pipefail
-          SHA7=$(echo "$GITHUB_SHA" | cut -c1-7)
 
           SRC=$(find src-tauri/gen/android -path "*release*" -name "*.apk" -type f | head -1)
           [ -n "$SRC" ] || SRC=$(find src-tauri/gen/android -name "*.apk" -type f | head -1)
           [ -n "$SRC" ] || { echo "::error::未找到 APK 产物"; find src-tauri/gen/android -name "*.apk" | head; exit 1; }
           echo "源 APK: $SRC ($(du -h "$SRC" | cut -f1))"
 
-          # 依据实际打包的 ABI 决定文件名，避免把 universal 包误标成 arm64 单架构
+          # 核验实际打包的 ABI，避免把 universal 包误标成 arm64 单架构
           ABIS=$(unzip -l "$SRC" | awk '{print $4}' | grep -oE '^lib/[^/]+/' | cut -d/ -f2 | sort -u | tr '\n' ' ')
           echo "包含 ABI: ${ABIS:-<无 native lib>}"
-          ARCH="universal"
-          if [ "$(echo $ABIS | tr -d ' ')" = "arm64-v8a" ]; then ARCH="arm64"; fi
+          if [ "$(echo $ABIS | tr -d ' ')" != "arm64-v8a" ]; then
+            echo "::error::产物 ABI 不是预期的 arm64-v8a，实际为: ${ABIS:-无}"
+            exit 1
+          fi
 
           mkdir -p dist-apk
           WORK="$RUNNER_TEMP/signwork"
@@ -149,16 +187,15 @@ jobs:
             ALIAS="$KEY_ALIAS"
             KSPASS="pass:$STORE_PASSWORD"
             KEYPASS="pass:$KEY_PASSWORD"
-            SUFFIX=""
           else
             # 无发布密钥时不能用未签名包冒充产物（它无法安装）。
-            # 这里现场生成一次性调试密钥完成签名，文件名带 -debug 明确标识不可分发。
-            echo "::warning::未配置 ANDROID_KEYSTORE_BASE64，改用一次性调试密钥签名（产物不可对外分发）"
+            # 现场生成一次性调试密钥完成签名；文件名不带后缀以保持命名规范，
+            # 但日志与 Release 说明里明确标注「调试签名，仅内测」。
+            echo "::warning::未配置 ANDROID_KEYSTORE_BASE64，改用一次性调试密钥签名（仅可内测，不可对外分发）"
             KS="$WORK/debug.jks"
             ALIAS="stland-debug"
             KSPASS="pass:stlanddebug"
             KEYPASS="pass:stlanddebug"
-            SUFFIX="-debug"
             keytool -genkeypair -v -keystore "$KS" -alias "$ALIAS" \
               -keyalg RSA -keysize 2048 -validity 10000 \
               -storepass stlanddebug -keypass stlanddebug \
@@ -185,17 +222,29 @@ jobs:
               "$WORK/aligned.apk"
           fi
 
-          NAME="Stland-${VER}-${ARCH}${SUFFIX}-${SHA7}.apk"
-          cp "$WORK/out.apk" "dist-apk/$NAME"
-          echo "name=$NAME" >> "$GITHUB_OUTPUT"
-          echo "path=dist-apk/$NAME" >> "$GITHUB_OUTPUT"
+          cp "$WORK/out.apk" "dist-apk/$APK_NAME"
+          echo "path=dist-apk/$APK_NAME" >> "$GITHUB_OUTPUT"
           ls -lh dist-apk
 
           echo "=== 签名核验（失败则中断）==="
-          "$BUILD_TOOLS/apksigner" verify --print-certs "dist-apk/$NAME"
+          "$BUILD_TOOLS/apksigner" verify --print-certs "dist-apk/$APK_NAME"
           echo "=== 产物信息 ==="
-          file "dist-apk/$NAME"
-          unzip -l "dist-apk/$NAME" | tail -3
+          file "dist-apk/$APK_NAME"
+          unzip -l "dist-apk/$APK_NAME" | tail -3
+
+      # 只查「文件存在」不够：仓库图标是新的、文件检查全绿，
+      # 但 APK 里仍可能是 Tauri 默认图标。这里解包实证。
+      - name: Verify APK icon
+        run: |
+          python3 -m pip install --quiet --disable-pip-version-check pillow
+          python3 scripts/verify_apk_icon.py "${{ steps.apk.outputs.path }}"
+
+      # 明文放行配置也要实证落到包里，而不只是改了源工程文件
+      - name: Verify APK cleartext config
+        run: |
+          set -euo pipefail
+          APK="${{ steps.apk.outputs.path }}"
+          python3 scripts/verify_apk_network.py "$APK"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -205,11 +254,47 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Attach to release
-        if: startsWith(github.ref, 'refs/tags/v')
+      # tag 推送自动发布；手动 dispatch 按 publish_release 开关决定
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish_release)
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('v{0}', inputs.version) }}
+          name: Stland ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('v{0}', inputs.version) }}
           files: ${{ steps.apk.outputs.path }}
-          name: Stland ${{ github.ref_name }}
           draft: false
-          generate_release_notes: true
+          prerelease: false
+          # 覆盖同名资产：产物名固定为 Stland-arm64.apk，
+          # 重跑时替换旧包而不是堆积多个同名附件（旧资产会被删除后重新上传）
+          overwrite_files: true
+          body: |
+            ## Stland 股岛 v${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || inputs.version }}
+
+            Android arm64 安装包，文件名固定 `Stland-arm64.apk`。
+
+            ### 本次修复
+            - 修复客户端启动黑屏（Naive UI Provider 组件未导入，导致 useMessage 抛错、组件树挂载失败）
+            - 重新设计应用图标并确保打进 APK（`tauri android init` 用模板图标，需在 build 前覆盖 gen/android 资源）
+            - 新增运行期配置层 `src/config/app.config.json`，服务端地址 `http://139.196.225.114:8999`
+            - 接入原生 HTTP 通道（tauri-plugin-http）并放行自建服务端明文 HTTP（按主机白名单）
+            - 升级 npm 依赖与 Tauri CLI/插件
+
+            ### 安装
+            ```bash
+            adb install -r Stland-arm64.apk
+            ```
+
+            > 未配置发布签名 Secrets 时，产物使用一次性调试密钥签名，仅用于内测。
+
+      - name: Summary
+        if: always() && steps.apk.outputs.path != ''
+        run: |
+          {
+            echo "### Android 构建结果"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "| --- | --- |"
+            echo "| 产物 | \`${{ steps.apk.outputs.path }}\` |"
+            echo "| 大小 | $(du -h "${{ steps.apk.outputs.path }}" | cut -f1) |"
+            echo "| SHA256 | \`$(sha256sum "${{ steps.apk.outputs.path }}" | cut -d' ' -f1)\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
