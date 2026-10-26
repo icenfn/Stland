@@ -113,7 +113,12 @@ class AXML:
         name = self._str(name_idx)
 
         attrs: list[tuple[str, int, int]] = []   # (属性名, 类型, 原始数据)
-        apos = off + 8 + attr_start
+        # 属性起点相对 ResXMLTree_attrExt 结构：
+        #   chunk header 8 + node 的 lineNumber/comment 8 = 16，
+        #   attrExt 自身以 ns(4)/name(4) 开头，随后才是 attributeStart 偏移。
+        # 这里若写成 off + 8 + attr_start 会整体错位 8 字节，
+        # 读到的是垃圾属性 —— 表现为「配置明明正确却报未声明」的误报。
+        apos = off + 16 + attr_start
         for i in range(attr_count):
             p = apos + i * attr_size
             if p + 20 > off + csize:
