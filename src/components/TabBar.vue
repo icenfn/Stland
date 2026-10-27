@@ -1,12 +1,17 @@
 <script setup lang="ts">
-/** 底部导航栏：东方财富式五宫格，图标用内联 SVG 避免额外依赖 */
+/**
+ * 底部导航：五个主入口。
+ *
+ * 本轮去掉了「交易」Tab —— 下单已改为底部抽屉，从首页/个股页就地弹出，
+ * 不再需要一个常驻的整页入口；也去掉了「管理」Tab —— 运营后台迁移到服务端 WebUI。
+ */
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuth } from '@/stores/auth'
 
 const route = useRoute()
 const router = useRouter()
-const { isAdmin, isInstitution } = useAuth()
+const { isInstitution } = useAuth()
 
 interface TabItem {
   name: string
@@ -15,16 +20,13 @@ interface TabItem {
   icon: string
 }
 
-const tabs = computed<TabItem[]>(() => {
-  const base: TabItem[] = [
-    { name: 'home', label: '首页', path: '/', icon: 'home' },
-    { name: 'market', label: '行情', path: '/market', icon: 'chart' },
-    { name: 'trade', label: '交易', path: '/trade', icon: 'swap' },
-    { name: 'assets', label: '资产', path: '/assets', icon: 'wallet' },
-    { name: 'profile', label: '我的', path: '/profile', icon: 'user' },
-  ]
-  return base
-})
+const tabs: TabItem[] = [
+  { name: 'home', label: '首页', path: '/', icon: 'home' },
+  { name: 'market', label: '行情', path: '/market', icon: 'chart' },
+  { name: 'orders', label: '委托', path: '/orders', icon: 'swap' },
+  { name: 'assets', label: '资产', path: '/assets', icon: 'wallet' },
+  { name: 'profile', label: '我的', path: '/profile', icon: 'user' },
+]
 
 const activeName = computed(() => String(route.meta.tab ?? route.name ?? 'home'))
 
@@ -57,7 +59,6 @@ const icons: Record<string, string> = {
       <span class="lbl">{{ item.label }}</span>
     </button>
 
-    <!-- 机构与管理端快捷入口：只有对应角色可见 -->
     <button v-if="isInstitution" class="tab" :class="{ active: route.name === 'institution' }"
       @click="router.push('/institution')">
       <svg viewBox="0 0 24 24" class="ico" fill="none" stroke="currentColor" stroke-width="1.7"
@@ -65,13 +66,6 @@ const icons: Record<string, string> = {
         <path d="M4 20h16M6 20V9l6-5 6 5v11M10 20v-5h4v5" />
       </svg>
       <span class="lbl">交易台</span>
-    </button>
-    <button v-if="isAdmin" class="tab" :class="{ active: route.name === 'admin' }" @click="router.push('/admin')">
-      <svg viewBox="0 0 24 24" class="ico" fill="none" stroke="currentColor" stroke-width="1.7"
-        stroke-linecap="round" stroke-linejoin="round">
-        <path d="M12 3l8 4v5c0 5-3.5 8.5-8 9-4.5-.5-8-4-8-9V7z" />
-      </svg>
-      <span class="lbl">管理</span>
     </button>
   </nav>
 </template>

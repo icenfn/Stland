@@ -36,18 +36,45 @@ export function trendClass(value: number): string {
   return 'flat'
 }
 
+/**
+ * 时间戳归一化（秒 / 毫秒两种来源都统一成毫秒）。
+ *
+ * 服务端全部时间戳来自 Python 的 time.time()，即「秒」，带小数；
+ * 而部分行情快照会带毫秒。此前直接把秒当毫秒解析，
+ * 于是 2026 年的委托时间被显示成 1970 年 —— 这就是「时间显示错误」的根因。
+ * 这里按数量级判定：小于 1e11 的一律视为秒，其余视为毫秒。
+ */
+export function toMillis(ts: number): number {
+  if (!Number.isFinite(ts) || ts <= 0) return 0
+  // 1e11 秒 ≈ 5138 年，1e11 毫秒 ≈ 1973 年：任何真实时间戳只会落在其中一侧
+  return ts < 1e11 ? Math.round(ts * 1000) : Math.round(ts)
+}
+
 export function fmtTime(ts: number): string {
-  if (!ts) return '--'
-  const d = new Date(ts < 1e12 ? ts * 1000 : ts)
+  const ms = toMillis(ts)
+  if (!ms) return '--'
+  const d = new Date(ms)
   const pad = (n: number) => String(n).padStart(2, '0')
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
 }
 
 export function fmtDateTime(ts: number): string {
-  if (!ts) return '--'
-  const d = new Date(ts < 1e12 ? ts * 1000 : ts)
+  const ms = toMillis(ts)
+  if (!ms) return '--'
+  const d = new Date(ms)
   const pad = (n: number) => String(n).padStart(2, '0')
   return `${d.getMonth() + 1}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+/** 相对时间：刚刚 / 12 秒前 / 3 分钟前（用于「行情更新于」提示） */
+export function fmtAgo(ts: number, now = Date.now()): string {
+  const ms = toMillis(ts)
+  if (!ms) return '--'
+  const diff = Math.max(0, Math.round((now - ms) / 1000))
+  if (diff < 2) return '刚刚'
+  if (diff < 60) return `${diff} 秒前`
+  if (diff < 3600) return `${Math.floor(diff / 60)} 分钟前`
+  return fmtDateTime(ts)
 }
 
 /** 股票代码 → 展示用板块标签 */

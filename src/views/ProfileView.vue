@@ -1,36 +1,31 @@
 <script setup lang="ts">
-import { feedback } from '@/naive'
-/** 我的：账户信息、角色能力、风控等级、退出登录 */
+/**
+ * 我的：账户信息、风险测评入口、常用菜单、退出。
+ *
+ * 本轮三处调整：
+ *  · 删除「运营管理后台」入口 —— 账户与标的管理全部迁到服务端 WebUI，客户端不再持管理员能力；
+ *  · 风险偏好从三个按钮改为测评结果展示 + 「去测评/重新测评」入口，未测评时不显示等级；
+ *  · 菜单与卡片间距统一到全局令牌，避免各页面自成一派。
+ */
 import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { feedback } from '@/naive'
 import { useAuth } from '@/stores/auth'
 import { accountApi } from '@/api'
+import { levelLabel, levelTone, useRisk } from '@/stores/risk'
+import { fmtDateTime } from '@/utils/format'
 import AppBar from '@/components/AppBar.vue'
 
 const router = useRouter()
 const auth = useAuth()
+const risk = useRisk()
 const message = ref('')
-const riskOptions = [
-  { v: 1, label: '保守' },
-  { v: 2, label: '稳健' },
-  { v: 3, label: '进取' },
-]
 
 const user = computed(() => auth.state.user)
 const roleLabel = computed(() => {
-  const map: Record<string, string> = { retail: '普通零售', institution: '机构专业', admin: '管理端' }
+  const map: Record<string, string> = { retail: '普通零售', institution: '机构专业', admin: '管理员' }
   return map[user.value?.role ?? 'retail'] ?? ''
 })
-
-async function setRisk(v: number) {
-  try {
-    await accountApi.setRisk(v)
-    auth.syncUser({ risk_level: v })
-    message.value = '风险偏好已更新'
-  } catch (e: any) {
-    message.value = e?.message ?? '更新失败'
-  }
-}
 
 async function doLogout() {
   await auth.logout()
@@ -59,31 +54,42 @@ async function resetAccount() {
   <div class="page">
     <AppBar title="我的" />
 
-    <section class="px" style="padding-top: 12px">
+    <section class="px sect">
       <div class="card profile-card">
         <div class="avatar">{{ (user?.display_name ?? 'U').slice(0, 1) }}</div>
         <div class="grow">
           <div class="pname">{{ user?.display_name ?? user?.username }}</div>
           <div class="pmeta">{{ user?.username }} · {{ roleLabel }}</div>
         </div>
-        <span class="tag tag-blue">{{ user?.risk_level === 3 ? '进取型' : user?.risk_level === 2 ? '稳健型' : '保守型' }}</span>
+        <span v-if="risk.assessed.value" class="tag" :style="{ color: levelTone(risk.level.value) }">
+          {{ levelLabel(risk.level.value) }}
+        </span>
+        <span v-else class="tag">未测评</span>
       </div>
     </section>
 
     <p v-if="message" class="msg px">{{ message }}</p>
 
+    <!-- 风险偏好：仅展示测评结论，操作统一走测评页 -->
     <section class="px">
       <div class="card">
-        <div class="card-h">风险偏好</div>
-        <div class="risk-row">
-          <button v-for="r in riskOptions" :key="r.v" class="risk-btn"
-            :class="{ on: user?.risk_level === r.v }" @click="setRisk(r.v)">
-            {{ r.label }}
-          </button>
+        <div class="row-between">
+          <span class="card-h" style="margin: 0">风险偏好</span>
+          <span class="text-xs">{{ risk.assessed.value ? '已测评' : '未评估' }}</span>
         </div>
-        <p class="text-xs" style="margin-top: 8px; line-height: 1.6">
-          风险偏好用于展示适配的风险画像指标，不影响撮合规则。
-        </p>
+        <template v-if="risk.assessed.value">
+          <div class="risk-show">
+            <span class="risk-level" :style="{ color: levelTone(risk.level.value) }">
+              {{ levelLabel(risk.level.value) }}
+            </span>
+            <span class="text-xs tabular">{{ risk.score.value }} 分 · {{ fmtDateTime(risk.assessedAt.value) }}</span>
+          </div>
+        </template>
+        <p v-else class="text-xs hint">尚未完成风险测评，因此不显示风险偏好。先答 5 道题，再得到结论。</p>
+
+        <button class="btn btn-ghost btn-block risk-btn" @click="router.push('/risk')">
+          {{ risk.assessed.value ? '重新测评' : '开始风险测评' }}
+        </button>
       </div>
     </section>
 
@@ -98,9 +104,6 @@ async function resetAccount() {
         <button v-if="auth.isInstitution.value" class="menu-item" @click="router.push('/institution')">
           <span>机构交易台</span><span class="arrow">›</span>
         </button>
-        <button v-if="auth.isAdmin.value" class="menu-item" @click="router.push('/admin')">
-          <span>运营管理后台</span><span class="arrow">›</span>
-        </button>
         <button class="menu-item" @click="resetAccount">
           <span>重置演示账户</span><span class="arrow">›</span>
         </button>
@@ -110,26 +113,26 @@ async function resetAccount() {
     <section class="px">
       <div class="card about">
         <div class="card-h">关于 Stland</div>
-        <p class="text-sm" style="line-height: 1.75">
-          Stland 股岛是一套自包含股票交易系统：服务端内置 28 支标的与模拟交易所（撮合、结算、风控、审计），
+        <p class="text-sm about-text">
+          Stland 股岛是一套自包含股票交易系统：服务端内置标的池与模拟交易所（撮合、结算、风控、审计），
           客户端为 Tauri + Vue3 移动应用。全部行情由内置引擎生成，不依赖任何外部行情数据源。
         </p>
-        <p class="text-xs" style="margin-top: 8px; color: var(--c-text-3)">
-          版本 1.0.0 · 仅用于学习与演示，不构成投资建议
+        <p class="text-xs about-ver">
+          版本 1.0.0 · 账户与标的的运营管理在服务端 WebUI 完成，客户端不提供管理入口
         </p>
       </div>
     </section>
 
     <section class="px">
-      <button class="btn btn-ghost btn-block" style="color: #ff8b8d; border-color: rgba(255,77,79,0.35)"
-        @click="doLogout">
-        退出登录
-      </button>
+      <button class="btn btn-ghost btn-block logout" @click="doLogout">退出登录</button>
     </section>
   </div>
 </template>
 
 <style scoped>
+.sect {
+  padding-top: 10px;
+}
 .profile-card {
   display: flex;
   align-items: center;
@@ -165,25 +168,26 @@ async function resetAccount() {
   font-weight: 600;
   margin-bottom: 10px;
 }
-.risk-row {
+.hint {
+  margin: 8px 0 0;
+  line-height: 1.65;
+}
+.risk-show {
   display: flex;
-  gap: 8px;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 10px 12px;
+  background: var(--c-bg-elevated);
+  border-radius: 10px;
+}
+.risk-level {
+  font-size: 17px;
+  font-weight: 700;
 }
 .risk-btn {
-  flex: 1;
-  background: var(--c-bg-elevated);
-  border: 1px solid var(--c-line);
-  border-radius: 10px;
-  color: var(--c-text-2);
+  margin-top: 12px;
   font-size: 13px;
-  padding: 10px 0;
-  cursor: pointer;
-}
-.risk-btn.on {
-  border-color: var(--c-brand);
-  color: #ff8b8d;
-  background: rgba(232, 56, 61, 0.1);
-  font-weight: 600;
+  padding: 10px 16px;
 }
 .menu {
   padding: 0;
@@ -208,7 +212,17 @@ async function resetAccount() {
 .arrow {
   color: var(--c-text-3);
 }
-.about {
+.about-text {
+  line-height: 1.75;
+  margin: 0;
+}
+.about-ver {
+  margin: 8px 0 0;
+  color: var(--c-text-3);
   line-height: 1.6;
+}
+.logout {
+  color: #ff8b8d;
+  border-color: rgba(255, 77, 79, 0.35);
 }
 </style>

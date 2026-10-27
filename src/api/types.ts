@@ -174,6 +174,9 @@ export interface PositionItem {
   unrealized_pnl: number
   unrealized_pct: number
   day_change_pct: number
+  /** 服务端可能返回的持仓更新时间（秒级时间戳，展示前需经 toMillis 归一化） */
+  updated_at?: number
+  opened_at?: number
 }
 
 export interface AccountSummary {

@@ -25,6 +25,11 @@ export interface ApiConfig {
     marketMs: number
     accountMs: number
   }
+  /** 实时推送（WebSocket）；服务端不支持时自动回退到轮询 */
+  realtime: {
+    wsEnabled: boolean
+    wsPath: string
+  }
 }
 
 const FALLBACK_BASE = 'http://127.0.0.1:8999'
@@ -61,6 +66,10 @@ export const apiConfig: ApiConfig = {
   polling: {
     marketMs: Number(envOr('VITE_POLL_MARKET_MS', String(fileApi.polling.marketMs))) || 1500,
     accountMs: Number(envOr('VITE_POLL_ACCOUNT_MS', String(fileApi.polling.accountMs))) || 5000,
+  },
+  realtime: {
+    wsEnabled: (fileApi.realtime?.wsEnabled ?? false) === true,
+    wsPath: fileApi.realtime?.wsPath ?? '/ws/market',
   },
 }
 

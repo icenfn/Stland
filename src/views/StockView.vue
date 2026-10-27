@@ -7,6 +7,7 @@ import { marketApi, tradeApi } from '@/api'
 import type { BarItem, Depth, MinutePoint, Quote, StockMeta } from '@/api/types'
 import AppBar from '@/components/AppBar.vue'
 import MiniChart from '@/components/MiniChart.vue'
+import TradeSheet from '@/components/TradeSheet.vue'
 import { fmtAmount, fmtPct, fmtPrice, fmtVolume, trendClass } from '@/utils/format'
 
 const route = useRoute()
@@ -21,6 +22,20 @@ const bars = ref<BarItem[]>([])
 const mode = ref<'minute' | 'kline'>('minute')
 const period = ref('1min')
 const error = ref('')
+
+/** 下单抽屉：不再跳转整页，保留当前个股的图表与盘口上下文 */
+const sheetShow = ref(false)
+const sheetSide = ref<'buy' | 'sell'>('buy')
+
+function openSheet(side: 'buy' | 'sell') {
+  sheetSide.value = side
+  sheetShow.value = true
+}
+
+async function onSubmitted() {
+  // 成交后立刻刷新盘口与价格，用户能马上看到结果
+  await Promise.all([loadMeta(), loadDepth()])
+}
 
 const pctClass = computed(() => trendClass(quote.value?.change_pct ?? 0))
 
@@ -171,9 +186,11 @@ onMounted(async () => {
 
     <!-- 底部交易条 -->
     <div class="trade-bar bottom-bar">
-      <button class="btn btn-buy" @click="router.push({ path: '/trade', query: { code, side: 'buy' } })">买入</button>
-      <button class="btn btn-sell" @click="router.push({ path: '/trade', query: { code, side: 'sell' } })">卖出</button>
+      <button class="btn btn-buy" @click="openSheet('buy')">买入</button>
+      <button class="btn btn-sell" @click="openSheet('sell')">卖出</button>
     </div>
+
+    <TradeSheet v-model:show="sheetShow" :code="code" :side="sheetSide" @submitted="onSubmitted" />
   </div>
 </template>
 

@@ -121,27 +121,3 @@ export const accountApi = {
 
   reset: () => alovaInstance.Post<{ ok: boolean; cash: number }>('/api/account/reset', {}),
 }
-
-export const adminApi = {
-  dashboard: () => alovaInstance.Get<any>('/api/admin/dashboard'),
-
-  users: (keyword = '') => alovaInstance.Get<{ total: number; items: any[] }>('/api/admin/users', { params: { keyword } }),
-
-  setUserStatus: (id: number, status: 'active' | 'frozen' | 'closed') =>
-    alovaInstance.Post<{ ok: boolean; status: string }>(`/api/admin/users/${id}/status`, { status }),
-
-  adjustCash: (id: number, amount: number, remark = '') =>
-    alovaInstance.Post<{ ok: boolean; cash: number }>(`/api/admin/users/${id}/adjust`, { amount, remark }),
-
-  stocks: () => alovaInstance.Get<{ items: any[] }>('/api/admin/stocks'),
-
-  audit: (limit = 100) => alovaInstance.Get<{ items: any[] }>('/api/admin/audit', { params: { limit } }),
-
-  events: (limit = 50) => alovaInstance.Get<{ items: any[] }>('/api/admin/events', { params: { limit } }),
-
-  matching: () => alovaInstance.Get<any>('/api/admin/matching'),
-
-  settle: () => alovaInstance.Post<{ ok: boolean }>('/api/admin/settle', {}),
-
-  leaderboard: () => alovaInstance.Get<{ items: any[] }>('/api/admin/leaderboard'),
-}
