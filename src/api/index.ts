@@ -117,7 +117,13 @@ export const accountApi = {
       }
     }>('/api/account/performance'),
 
-  setRisk: (risk_level: number) => alovaInstance.Post<{ risk_level: number }>('/api/account/risk', { risk_level }),
+  /** 提交风险测评：只上传原始答案与问卷版本，分数与等级由服务端按同一口径复算 */
+  setRisk: (payload: { version: number; answers: number[] }) =>
+    alovaInstance.Post<{ risk_level: number; score: number; assessed_at: number }>('/api/account/risk', payload),
 
-  reset: () => alovaInstance.Post<{ ok: boolean; cash: number }>('/api/account/reset', {}),
+  /** 读取当前风险画像（含是否已测评与历史条数） */
+  getRisk: () =>
+    alovaInstance.Get<{ assessed: boolean; risk_level: number; score?: number; assessed_at?: number; history_count: number }>(
+      '/api/account/risk',
+    ),
 }

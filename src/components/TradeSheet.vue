@@ -1,17 +1,19 @@
 <script setup lang="ts">
 /**
- * 下单底部抽屉：替代原来的整页 TradeView。
+ * 下单底部抽屉。
  *
- * 为什么改成抽屉：下单是一个「局部、短时」动作，用户从首页或个股页点「买入」时
- * 期望保留上下文（还能看到刚才那支股票的价格与榜单）。整页跳转会让用户失去参照物，
- * 返回时页面状态还会重置。抽屉从底部升起、点遮罩即收起，符合「轻量操作」的心智。
+ * 设计取向：抽屉只负责「填参数 + 提交」，不再重复展示标的名称、最新价、板块、
+ * 涨跌幅 —— 这些信息用户在打开抽屉之前刚在榜单或详情页看过，抽屉里再抄一遍
+ * 既占高度又容易与行情不同步（抽屉打开期间价格在跳动，静态文案反而误导）。
+ * 因此顶部只保留一根拖动条和一个关闭按钮。
  *
- * 交互要点：
- *  · 数量按「手」步进（A 股 1 手 = 100 股），快速按钮给出 1/2/3/5/10 手；
- *  · 提交前拉一次服务端预估（含滑点与费用），让用户在点确认前看到真实成交预期；
- *  · 提交成功给出成交/受理结果，并把事件抛给父组件刷新资产与委托。
+ * 返回键语义：抽屉打开时按系统返回键，应当「关闭抽屉」而不是「退出当前页面」。
+ * 实现方式是在打开时往历史栈压一个同地址的哨兵状态，并在 popstate 时拦下：
+ *   · 返回键 → 历史回退 → 我们关闭抽屉（页面 URL 不变，用户仍停留在原页面）；
+ *   · 点关闭按钮 / 点遮罩 → 我们主动 history.back()，让哨兵状态出栈，
+ *     避免历史栈里残留无效状态、导致用户要按两次返回键才退页。
  */
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { marketApi, tradeApi } from '@/api'
 import type { Quote, StockMeta, TradePreview } from '@/api/types'
 import { fmtAmount, fmtPrice } from '@/utils/format'
@@ -46,6 +48,38 @@ const lot = computed(() => meta.value?.lot_size ?? 100)
 const quickQty = computed(() => [1, 2, 3, 5, 10].map((n) => n * lot.value))
 const estimateAmount = computed(() => Number(quote.value?.price ?? 0) * Number(quantity.value || 0))
 
+/** 是否已经压入了返回键哨兵状态 */
+let guardPushed = false
+
+function guardOn() {
+  if (guardPushed || typeof window === 'undefined') return
+  window.history.pushState({ stlandSheet: true }, '')
+  guardPushed = true
+  window.addEventListener('popstate', onPopState)
+}
+
+function guardOff() {
+  window.removeEventListener('popstate', onPopState)
+  guardPushed = false
+}
+
+/** 系统返回键 / 手势返回：拦下路由回退，只关抽屉 */
+function onPopState() {
+  guardPushed = false
+  window.removeEventListener('popstate', onPopState)
+  if (props.show) emit('update:show', false)
+}
+
+/** 主动关闭：先把哨兵状态退掉，再通知父组件收起 */
+function close() {
+  if (guardPushed) {
+    // 不先移除监听：由 history.back() 触发的 popstate 会负责关抽屉与解绑
+    window.history.back()
+    return
+  }
+  emit('update:show', false)
+}
+
 async function loadSymbol() {
   if (!code.value) return
   try {
@@ -77,14 +111,15 @@ async function refreshPreview() {
   }
 }
 
-function close() {
-  emit('update:show', false)
-}
-
 function stepPrice(delta: number) {
   const tick = meta.value?.tick_size ?? 0.01
   const next = Math.max(tick, Number(price.value || 0) + delta * tick)
   price.value = next.toFixed(2)
+}
+
+function setMessage(text: string, type: 'ok' | 'err') {
+  message.value = text
+  messageType.value = type
 }
 
 async function submit() {
@@ -108,7 +143,7 @@ async function submit() {
     } else if (o.status === 'partial') {
       setMessage(`部分成交 ${o.filled_quantity}/${o.quantity} 股`, 'ok')
     } else {
-      setMessage(`委托已受理（${o.status}）`, 'ok')
+      setMessage('委托已受理，可在「委托与成交」中查看', 'ok')
     }
     emit('submitted', { code: code.value, side: side.value })
     await refreshPreview()
@@ -119,21 +154,20 @@ async function submit() {
   }
 }
 
-function setMessage(text: string, type: 'ok' | 'err') {
-  message.value = text
-  messageType.value = type
-}
-
 watch(
   () => props.show,
   (v) => {
-    if (!v) return
+    if (!v) {
+      guardOff()
+      return
+    }
     message.value = ''
     preview.value = null
     code.value = props.code
     side.value = props.side
     price.value = ''
     quantity.value = '100'
+    guardOn()
     void loadSymbol().then(refreshPreview)
   },
 )
@@ -141,23 +175,18 @@ watch(
 watch([price, quantity, orderType, side], () => {
   if (props.show) void refreshPreview()
 })
+
+onBeforeUnmount(guardOff)
 </script>
 
 <template>
   <transition name="sheet">
     <div v-if="show" class="sheet-mask" @click.self="close">
       <div class="sheet">
-        <div class="sheet-grab" />
-        <header class="sheet-head">
-          <div class="col">
-            <span class="sym-name">{{ quote?.name ?? code ?? '选择标的' }}</span>
-            <span class="sym-sub">{{ code }} · {{ meta?.board ?? 'A股' }}</span>
-          </div>
-          <div class="sym-price tabular" :class="(quote?.change_pct ?? 0) >= 0 ? 'up' : 'down'">
-            {{ fmtPrice(quote?.price ?? 0) }}
-            <span class="sym-pct">{{ (quote?.change_pct ?? 0) > 0 ? '+' : '' }}{{ (quote?.change_pct ?? 0).toFixed(2) }}%</span>
-          </div>
-        </header>
+        <div class="sheet-top">
+          <span class="sheet-grab" />
+          <button class="sheet-close" aria-label="关闭" @click="close">✕</button>
+        </div>
 
         <div class="side-switch">
           <button class="side-btn buy" :class="{ on: side === 'buy' }" @click="side = 'buy'">买入</button>
@@ -240,35 +269,31 @@ watch([price, quantity, orderType, side], () => {
   padding: 8px var(--sp-4) calc(var(--sp-4) + var(--safe-bottom));
   box-shadow: 0 -12px 40px rgba(0, 0, 0, 0.45);
 }
+.sheet-top {
+  position: relative;
+  height: 18px;
+}
 .sheet-grab {
+  position: absolute;
+  left: 50%;
+  top: 4px;
   width: 38px;
   height: 4px;
   border-radius: 2px;
   background: var(--c-line-strong);
-  margin: 4px auto 10px;
+  transform: translateX(-50%);
 }
-.sheet-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-.sym-name {
-  font-size: 17px;
-  font-weight: 700;
-}
-.sym-sub {
-  font-size: 11px;
+.sheet-close {
+  position: absolute;
+  right: -4px;
+  top: -6px;
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: none;
   color: var(--c-text-3);
-  margin-top: 2px;
-}
-.sym-price {
-  font-size: 19px;
-  font-weight: 700;
-}
-.sym-pct {
-  font-size: 11px;
-  font-weight: 600;
-  margin-left: 4px;
+  font-size: 13px;
+  cursor: pointer;
 }
 
 .side-switch {
@@ -278,7 +303,7 @@ watch([price, quantity, orderType, side], () => {
   border: 1px solid var(--c-line);
   border-radius: var(--r-md);
   padding: 4px;
-  margin-top: var(--sp-3);
+  margin-top: var(--sp-2);
 }
 .side-btn {
   flex: 1;

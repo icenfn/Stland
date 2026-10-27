@@ -1,5 +1,13 @@
 <script setup lang="ts">
-/** 个股详情：分时/K线 + 五档盘口 + 交易入口，仿东方财富个股页 */
+/**
+ * 个股详情：价格区 + (K线/分时 ⇄ 五档盘口) 双栏 + 题材 + 交易条。
+ *
+ * 版式取舍：图表与盘口左右 2:1 并排。
+ * 看盘的固定动作是「看走势、验证盘口」，两者需要同屏对照：
+ * 上一版把盘口放在图表下方整行，手机上需要滚屏才能把当前价与卖一/买一对上，
+ * 体验割裂。改成 2:1 后，图表仍占主视野（约 66%），盘口在右侧窄栏列出
+ * 卖5→买5 十档，与图表同一水平线，扫一眼即可完成「走势+挂单」比对。
+ */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useIntervalFn } from '@vueuse/core'
@@ -139,31 +147,29 @@ onMounted(async () => {
         </div>
       </section>
 
-      <!-- 图表 -->
-      <section class="card chart-card">
-        <div class="chart-tabs">
-          <button class="ctab" :class="{ on: mode === 'minute' }" @click="switchMode('minute')">分时</button>
-          <button class="ctab" :class="{ on: mode === 'kline' && period === '1min' }" @click="switchPeriod('1min')">1分</button>
-          <button class="ctab" :class="{ on: mode === 'kline' && period === '5min' }" @click="switchPeriod('5min')">5分</button>
-          <button class="ctab" :class="{ on: mode === 'kline' && period === '15min' }" @click="switchPeriod('15min')">15分</button>
-          <button class="ctab" :class="{ on: mode === 'kline' && period === '60min' }" @click="switchPeriod('60min')">60分</button>
+      <!-- 图表 : 盘口 = 2 : 1 -->
+      <section class="quote-row">
+        <div class="card chart-card">
+          <div class="chart-tabs">
+            <button class="ctab" :class="{ on: mode === 'minute' }" @click="switchMode('minute')">分时</button>
+            <button class="ctab" :class="{ on: mode === 'kline' && period === '1min' }" @click="switchPeriod('1min')">1分</button>
+            <button class="ctab" :class="{ on: mode === 'kline' && period === '5min' }" @click="switchPeriod('5min')">5分</button>
+            <button class="ctab" :class="{ on: mode === 'kline' && period === '15min' }" @click="switchPeriod('15min')">15分</button>
+            <button class="ctab" :class="{ on: mode === 'kline' && period === '60min' }" @click="switchPeriod('60min')">60分</button>
+          </div>
+          <MiniChart v-if="mode === 'minute'" :minutes="minutes" :prev-close="quote?.prev_close ?? 0" :height="176" />
+          <MiniChart v-else mode="kline" :bars="bars" :height="176" />
         </div>
-        <MiniChart v-if="mode === 'minute'" :minutes="minutes" :prev-close="quote?.prev_close ?? 0" :height="186" />
-        <MiniChart v-else mode="kline" :bars="bars" :height="186" />
-      </section>
 
-      <!-- 五档盘口 -->
-      <section class="card">
-        <div class="card-title">五档盘口</div>
-        <div class="depth">
-          <div class="depth-col">
+        <div class="card depth-card">
+          <div class="card-title">五档盘口</div>
+          <div class="depth">
             <div v-for="(lv, i) in (depth?.asks ?? []).slice().reverse()" :key="'a' + i" class="depth-row">
               <span class="dk">卖{{ 5 - i }}</span>
               <span class="dp tabular down">{{ fmtPrice(lv.price) }}</span>
               <span class="dv tabular">{{ lv.volume }}</span>
             </div>
-          </div>
-          <div class="depth-col">
+            <div class="spread" />
             <div v-for="(lv, i) in depth?.bids ?? []" :key="'b' + i" class="depth-row">
               <span class="dk">买{{ i + 1 }}</span>
               <span class="dp tabular up">{{ fmtPrice(lv.price) }}</span>
@@ -239,9 +245,32 @@ onMounted(async () => {
   font-size: 12px;
   font-weight: 600;
 }
+.quote-row {
+  display: flex;
+  gap: 8px;
+  padding: 0 14px 12px;
+  align-items: stretch;
+}
 .chart-card {
-  margin: 0 14px 12px;
+  flex: 2 1 0;
+  min-width: 0;
+  margin: 0;
   padding: 10px 8px;
+}
+.depth-card {
+  flex: 1 1 0;
+  min-width: 118px;
+  margin: 0;
+  padding: 10px 10px;
+}
+.depth-card .card-title {
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+.spread {
+  height: 1px;
+  background: var(--c-line);
+  margin: 3px 0;
 }
 .chart-tabs {
   display: flex;
@@ -252,8 +281,8 @@ onMounted(async () => {
   background: none;
   border: none;
   color: var(--c-text-3);
-  font-size: 12px;
-  padding: 4px 8px;
+  font-size: 11px;
+  padding: 4px 6px;
   border-radius: 7px;
   cursor: pointer;
 }
@@ -272,20 +301,27 @@ onMounted(async () => {
 }
 .depth {
   display: flex;
-  gap: 14px;
-}
-.depth-col {
-  flex: 1;
+  flex-direction: column;
 }
 .depth-row {
   display: flex;
+  align-items: baseline;
   justify-content: space-between;
-  font-size: 12px;
-  padding: 3px 0;
+  gap: 4px;
+  font-size: 11px;
+  padding: 2.5px 0;
 }
 .dk {
   color: var(--c-text-3);
-  width: 30px;
+  flex: 0 0 auto;
+}
+.dp {
+  flex: 1 1 auto;
+  text-align: right;
+}
+.dv {
+  flex: 0 0 42px;
+  text-align: right;
 }
 .dv {
   color: var(--c-text-2);

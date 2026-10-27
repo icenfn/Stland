@@ -50,12 +50,6 @@ async function submit() {
   }
 }
 
-function quickFill(name: string, pwd: string) {
-  mode.value = 'login'
-  username.value = name
-  password.value = pwd
-  errorMsg.value = ''
-}
 </script>
 
 <template>
@@ -106,20 +100,7 @@ function quickFill(name: string, pwd: string) {
         {{ busy ? '处理中…' : mode === 'login' ? '登录' : '注册并开户' }}
       </button>
 
-      <div class="demo">
-        <div class="demo-title">演示账户（内置种子数据）</div>
-        <div class="demo-list">
-          <button class="demo-item" @click="quickFill('retail01', 'Stland@2026')">
-            零售 retail01
-          </button>
-          <button class="demo-item" @click="quickFill('inst01', 'Stland@2026')">
-            机构 inst01
-          </button>
-          <button class="demo-item" @click="quickFill('admin', 'Stland@Admin2026')">
-            管理 admin
-          </button>
-        </div>
-      </div>
+
     </div>
   </div>
 </template>
@@ -242,28 +223,8 @@ function quickFill(name: string, pwd: string) {
   margin: 4px 0 10px;
 }
 
-.demo {
-  margin-top: 22px;
-  border-top: 1px dashed var(--c-line);
-  padding-top: 14px;
-}
-.demo-title {
-  font-size: 11px;
-  color: var(--c-text-3);
-  margin-bottom: 8px;
-}
-.demo-list {
-  display: flex;
-  gap: 8px;
-}
-.demo-item {
-  flex: 1;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid var(--c-line);
-  border-radius: var(--r-sm);
-  color: var(--c-text-2);
-  font-size: 11px;
-  padding: 8px 4px;
-  cursor: pointer;
-}
+
+
+
+
 </style>

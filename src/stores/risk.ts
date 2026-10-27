@@ -137,7 +137,8 @@ export function useRisk() {
       const lv = levelOf(total)
       const rec: RiskRecord = { version: RISK_VERSION, score: total, level: lv, assessedAt: Date.now(), answers }
       // 先落服务端（影响风控画像），成功后再写本地档案，避免「本地显示已评估但服务端没收到」
-      await accountApi.setRisk(lv)
+      // 只上传答案与版本：分数和等级由服务端复算，避免「客户端自己宣布结论」
+      await accountApi.setRisk({ version: RISK_VERSION, answers: [...answers] })
       stored.value = rec
       syncUser({ risk_level: lv })
       return rec

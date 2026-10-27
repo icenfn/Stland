@@ -1,12 +1,15 @@
 <script setup lang="ts">
 /**
- * 资产页：总资产 / 风险画像 / 业绩 / 持仓。
+ * 资产页：总资产 / 风险偏好 / 业绩 / 持仓。
  *
- * 本轮修正两个问题：
- *  1) 持仓与流水的时间戳一律走 toMillis 归一化 —— 服务端给的是「秒」，
- *     旧代码直接按毫秒渲染，导致时间显示成 1970 年（即用户看到的「时间戳错误」）；
- *  2) 风险偏好未测评时不再展示等级，而是引导去做风险测评（见 /risk）。
- *     同时把「行情更新于」做成可见提示，用户能判断数据是否真的在刷新。
+ * 本轮结构调整：
+ *  · 删除「风险画像」卡片（持仓数 / 集中度 HHI / 组合β / 现金比）。
+ *    这四个指标与下方的持仓明细、资产构成高度重复，且 HHI/β 对普通用户
+ *    没有可执行的决策含义，属于「为展示而展示」的冗余模块；
+ *  · 把「风险偏好」从「我的」页迁到这里。风险偏好本质是资金属性，
+ *    与资产、持仓同屏才有意义（用户看完风险等级，紧接着就看见自己的仓位）；
+ *  · 持仓与流水时间戳一律经 toMillis 归一化（服务端是秒级时间戳，
+ *    直接按毫秒渲染会显示成 1970 年）。
  */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
@@ -27,7 +30,6 @@ const error = ref('')
 const updatedAt = ref(0)
 
 const asset = computed(() => summary.value?.asset)
-const riskInfo = computed(() => summary.value?.risk)
 
 const curvePoints = computed(() => (perf.value?.curve ?? []).map((p) => ({ t: p.t, price: p.equity })))
 
@@ -106,32 +108,34 @@ onBeforeUnmount(() => {})
       </div>
     </section>
 
-    <!-- 风险画像：未测评只给入口，不展示等级 -->
+    <!-- 风险偏好：未测评时不显示等级，只给测评入口 -->
     <section class="px">
       <div class="card">
         <div class="row-between">
-          <span class="card-h" style="margin: 0">风险画像</span>
-          <button v-if="risk.assessed.value" class="mini-btn" @click="router.push('/risk')">
-            {{ levelLabel(risk.level.value) }} · 重测
-          </button>
-          <button v-else class="mini-btn accent" @click="router.push('/risk')">去测风险偏好</button>
+          <span class="card-h" style="margin: 0">风险偏好</span>
+          <span class="text-xs">{{ risk.assessed.value ? '已测评' : '未评估' }}</span>
         </div>
 
         <template v-if="risk.assessed.value">
-          <div class="risk-grid">
-            <div class="rk"><span class="rk-v tabular">{{ riskInfo?.position_count ?? 0 }}</span><span class="rk-k">持仓数</span></div>
-            <div class="rk"><span class="rk-v tabular">{{ (riskInfo?.concentration_hhi ?? 0).toFixed(0) }}</span><span class="rk-k">集中度HHI</span></div>
-            <div class="rk"><span class="rk-v tabular">{{ (riskInfo?.portfolio_beta ?? 0).toFixed(2) }}</span><span class="rk-k">组合β</span></div>
-            <div class="rk"><span class="rk-v tabular">{{ (riskInfo?.cash_ratio ?? 0).toFixed(1) }}%</span><span class="rk-k">现金比</span></div>
+          <div class="risk-show">
+            <span class="risk-level" :style="{ color: levelTone(risk.level.value) }">
+              {{ levelLabel(risk.level.value) }}
+            </span>
+            <span class="text-xs tabular">
+              {{ risk.score.value }} 分 · {{ fmtDateTime(risk.assessedAt.value) }}
+            </span>
           </div>
           <p class="text-xs hint">
-            风险等级：<span :style="{ color: levelTone(risk.level.value), fontWeight: 600 }">{{ levelLabel(risk.level.value) }}</span>
-            · HHI &gt; 2500 表示高度集中；β &gt; 1 表示系统性风险高于市场。
+            风险偏好用于匹配你可承受的仓位波动；等级随测评结果更新，口径调整后需重新测评。
           </p>
         </template>
         <p v-else class="text-xs hint">
-          完成风险测评后，这里会显示与你的风险等级匹配的组合集中度、β 与现金比等指标。
+          尚未完成风险测评，因此不显示风险偏好。先答 5 道题，再得到结论。
         </p>
+
+        <button class="btn btn-ghost btn-block risk-btn" @click="router.push('/risk')">
+          {{ risk.assessed.value ? '重新测评' : '开始风险测评' }}
+        </button>
       </div>
     </section>
 
@@ -257,13 +261,28 @@ onBeforeUnmount(() => {})
   margin: 8px 0 0;
   line-height: 1.65;
 }
-.risk-grid,
+.risk-show {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 10px 12px;
+  background: var(--c-bg-elevated);
+  border-radius: 10px;
+}
+.risk-level {
+  font-size: 17px;
+  font-weight: 700;
+}
+.risk-btn {
+  margin-top: 12px;
+  font-size: 13px;
+  padding: 10px 16px;
+}
 .perf-grid {
   display: flex;
   gap: 6px;
   margin-top: 10px;
 }
-.rk,
 .pf {
   flex: 1;
   display: flex;
@@ -274,12 +293,10 @@ onBeforeUnmount(() => {})
   background: var(--c-bg-elevated);
   border-radius: 10px;
 }
-.rk-v,
 .pf-v {
   font-size: 15px;
   font-weight: 700;
 }
-.rk-k,
 .pf-k {
   font-size: 10px;
   color: var(--c-text-3);

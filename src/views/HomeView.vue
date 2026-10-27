@@ -15,17 +15,12 @@ import { useMarket } from '@/stores/market'
 import { fmtAmount, fmtPct, fmtPrice, trendClass } from '@/utils/format'
 import MiniChart from '@/components/MiniChart.vue'
 import QuoteRow from '@/components/QuoteRow.vue'
-import TradeSheet from '@/components/TradeSheet.vue'
 
 const router = useRouter()
 const market = useMarket()
 const { state, session, index, upCount, downCount, ready } = market
 
 const rankTab = ref<'gainers' | 'losers' | 'active'>('gainers')
-const sheetShow = ref(false)
-const sheetCode = ref('')
-const sheetSide = ref<'buy' | 'sell'>('buy')
-
 const rankList = computed(() => {
   const r = state.overview?.rank
   if (!r) return []
@@ -42,14 +37,6 @@ const feedLabel = computed(() => {
   if (state.feed === 'offline') return '离线'
   return '连接中'
 })
-
-function openSheet(side: 'buy' | 'sell', code = '') {
-  // 未指定标的时默认用榜单第一支，避免抽屉空着让用户再找一次
-  const fallback = rankList.value[0]?.code ?? state.quotes[0]?.code ?? ''
-  sheetCode.value = code || fallback
-  sheetSide.value = side
-  sheetShow.value = true
-}
 
 onMounted(() => market.start(1500))
 onBeforeUnmount(() => market.stop())
@@ -112,32 +99,6 @@ onBeforeUnmount(() => market.stop())
       </div>
     </section>
 
-    <!-- 快捷入口 -->
-    <section class="px">
-      <div class="quick">
-        <button class="quick-item" @click="openSheet('buy')">
-          <div class="quick-ico buy">买</div>
-          <span>买入</span>
-        </button>
-        <button class="quick-item" @click="openSheet('sell')">
-          <div class="quick-ico sell">卖</div>
-          <span>卖出</span>
-        </button>
-        <button class="quick-item" @click="router.push('/orders')">
-          <div class="quick-ico">单</div>
-          <span>委托</span>
-        </button>
-        <button class="quick-item" @click="router.push('/assets')">
-          <div class="quick-ico">仓</div>
-          <span>持仓</span>
-        </button>
-        <button class="quick-item" @click="router.push('/market')">
-          <div class="quick-ico">行</div>
-          <span>行情</span>
-        </button>
-      </div>
-    </section>
-
     <!-- 榜单 -->
     <section class="rank">
       <div class="rank-tabs">
@@ -159,8 +120,6 @@ onBeforeUnmount(() => market.stop())
       本系统为自包含模拟交易环境，全部行情由内置引擎生成，不构成任何投资建议。
     </p>
 
-    <TradeSheet v-model:show="sheetShow" :code="sheetCode" :side="sheetSide"
-      @submitted="() => { market.refreshAll() }" />
   </div>
 </template>
 
@@ -254,47 +213,6 @@ onBeforeUnmount(() => market.stop())
 .dist-num {
   font-size: 15px;
   font-weight: 600;
-}
-
-.quick {
-  display: flex;
-  justify-content: space-between;
-  margin-top: 12px;
-  padding: 12px;
-  background: var(--c-card);
-  border-radius: var(--r-lg);
-  border: 1px solid var(--c-line);
-}
-.quick-item {
-  background: none;
-  border: none;
-  color: var(--c-text-2);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-  cursor: pointer;
-  flex: 1;
-}
-.quick-ico {
-  width: 34px;
-  height: 34px;
-  border-radius: 11px;
-  display: grid;
-  place-items: center;
-  font-size: 14px;
-  font-weight: 700;
-  background: rgba(255, 255, 255, 0.07);
-  color: var(--c-text);
-}
-.quick-ico.buy {
-  background: rgba(255, 77, 79, 0.18);
-  color: #ff8b8d;
-}
-.quick-ico.sell {
-  background: rgba(18, 183, 106, 0.18);
-  color: #4ade9b;
 }
 
 .rank {

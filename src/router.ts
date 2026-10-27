@@ -37,7 +37,8 @@ export const routes: RouteRecordRaw[] = [
     path: '/orders',
     name: 'orders',
     component: () => import('./views/OrdersView.vue'),
-    meta: { title: '委托与成交', tab: 'orders' },
+    // 独立路由：不挂底部 Tab，从资产页 / 首页入口进入后可用返回键回到来源页
+    meta: { title: '委托与成交' },
   },
   {
     path: '/assets',
