@@ -4,6 +4,7 @@ import type {
   AccountSummary,
   BarItem,
   Depth,
+  IndexMember,
   IndexQuote,
   MinutePoint,
   OrderItem,
@@ -69,11 +70,11 @@ export const marketApi = {
     alovaInstance.Get<{
       quote: IndexQuote
       meta: StockMeta
-      members: Array<{ code: string; name: string; board: string; industry: string }>
+      members: IndexMember[]
     }>(`/api/market/index/${code}`),
 
   indexMinutes: (code: string, limit = 240) =>
-    alovaInstance.Get<{ code: string; items: Array<{ t: number; price: number }> }>(
+    alovaInstance.Get<{ code: string; items: MinutePoint[] }>(
       `/api/market/index/${code}/minutes`,
       { params: { limit } },
     ),

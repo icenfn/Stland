@@ -3,11 +3,11 @@ import type { RouteRecordRaw } from 'vue-router'
 /**
  * 路由表：只保留客户端职责内的页面。
  *
- * 本轮变化：
- *  · 新增 /watch：自选股成为一级入口（底部 Tab），支持分组切换；
- *  · 新增 /index/:code：指数与个股一样有代码，可以点进去看详情；
- *  · /stock/:code 与 /index/:code 分开：两者详情信息结构不同（指数没有盘口、
- *    不可下单），共用一个页面会到处 if/else，不如各自一份清晰的模板。
+ * 本轮变化：/stock/:code 与 /index/:code 共用同一个详情页组件。
+ * 上一版为指数单独做了一份精简模板，结果是同一支标的换个入口就换副样子
+ * （指数没有指标网格、没有副图、纵向节奏也不一样），用户要重新学一遍布局。
+ * 现在两者走同一套结构，差异只在「盘口位放五档还是涨跌分布」「有没有交易条」，
+ * 由组件内部按路由名判断 —— 同一模板内两处分支，远比维护两份模板可靠。
  */
 export const routes: RouteRecordRaw[] = [
   {
@@ -37,13 +37,13 @@ export const routes: RouteRecordRaw[] = [
   {
     path: '/stock/:code',
     name: 'stock',
-    component: () => import('./views/StockView.vue'),
+    component: () => import('./views/DetailView.vue'),
     meta: { title: '详情' },
   },
   {
     path: '/index/:code',
     name: 'index',
-    component: () => import('./views/IndexView.vue'),
+    component: () => import('./views/DetailView.vue'),
     meta: { title: '指数' },
   },
   {

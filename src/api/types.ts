@@ -92,11 +92,50 @@ export interface IndexQuote {
   change: number
   change_pct: number
   amount: number
+  /**
+   * 成分合计成交量。
+   * 指数自己没有成交，量能只能由成分加总得到 —— 但既然详情页要和个股同构、
+   * 副图要能画成交量，这个字段就必须存在，否则指数页的成交量永远是 0 轴。
+   */
+  volume: number
   up: number
   down: number
   flat: number
   members: number
   is_index: boolean
+}
+
+/**
+ * 详情页统一视图：个股与指数在同一个页面里渲染，必须有一个共同的形状。
+ *
+ * 为什么不直接用 Quote：两者字段各有短长 —— 个股有换手率/涨跌停，指数有涨跌家数，
+ * 硬套任一方都要在模板里到处判空。这里定义一份「公共字段齐全、特色字段可选」的视图，
+ * 由调用方显式归一化，模板就能只写一条渲染路径。
+ */
+export interface DetailQuote {
+  code: string
+  name: string
+  price: number
+  prev_close: number
+  open: number
+  high: number
+  low: number
+  volume: number
+  amount: number
+  change: number
+  change_pct: number
+  /** 振幅：个股直接取服务端值，指数按 (高-低)/昨收 现算 */
+  amplitude: number
+  /** 换手率：指数没有这个概念，按 0 处理且不展示 */
+  turnover_rate: number
+  limit_up?: number
+  limit_down?: number
+  /** 以下仅指数有：成分涨跌家数 */
+  up?: number
+  down?: number
+  flat?: number
+  members?: number
+  is_index?: boolean
 }
 
 export interface Overview {
@@ -146,6 +185,16 @@ export interface MinutePoint {
   price: number
   volume: number
   avg: number
+}
+
+/** 指数成分：列表里直接带报价，避免为了看涨跌幅再逐支请求 */
+export interface IndexMember {
+  code: string
+  name: string
+  board: string
+  industry: string
+  price?: number
+  change_pct?: number
 }
 
 export interface OrderItem {
