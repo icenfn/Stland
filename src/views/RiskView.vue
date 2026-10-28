@@ -1,16 +1,18 @@
 <script setup lang="ts">
 /**
- * 风险测评：5 题问卷 → 分数 → 等级。
+ * 风险偏好测评：5 题问卷 → 分数 → 等级（服务端复算并存档）。
  *
- * 为什么要有独立页面：此前「我的」页把风险偏好做成三个按钮，点一下就把
- * risk_level 写进服务端，既没有依据也无法复核。现在按监管惯例做成答题式测评：
- * 每题选项带分值，累计分数映射到保守/稳健/进取三档并存档（含时间与版本）。
- * 未完成测评时，资产页与个人页都不展示风险偏好，只给「去测评」入口。
+ * 关键点（对应本轮需求「测评后重进软件又显示开始风险测评」）：
+ *  · 页面不再读写任何本地档案。是否已测评只认服务端 `risk_assessed_at`；
+ *  · 进入页面先 `refresh(true)` 强制拉一次服务端状态，回填上次选择仅用于复核；
+ *  · 提交后以服务端回传的等级/分数/时间为准，不使用本地试算值落地。
+ *
+ * 分档口径与服务端完全一致：满分 30，三等分 → <10 保守、<20 稳健、≥20 进取。
  */
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import AppBar from '@/components/AppBar.vue'
-import { RISK_QUESTIONS, levelLabel, levelTone, useRisk } from '@/stores/risk'
+import { RISK_QUESTIONS, levelLabel, levelOf, levelTone, useRisk } from '@/stores/risk'
 import { fmtDateTime } from '@/utils/format'
 
 const router = useRouter()
@@ -18,18 +20,16 @@ const risk = useRisk()
 
 const answers = ref<number[]>(new Array(RISK_QUESTIONS.length).fill(-1))
 const message = ref('')
+const done = ref(false)
 
 const answeredCount = computed(() => answers.value.filter((a) => a >= 0).length)
 const complete = computed(() => answeredCount.value === RISK_QUESTIONS.length)
 
-/** 实时试算分数，让用户在提交前就能看到「答到哪一档」 */
+/** 实时试算：仅用于提交前给用户一个预期，最终以服务端复算为准 */
 const liveScore = computed(() =>
   RISK_QUESTIONS.reduce((sum, q, i) => sum + (answers.value[i] >= 0 ? q.options[answers.value[i]].score : 0), 0),
 )
-const liveLevel = computed(() => {
-  const s = liveScore.value
-  return s <= 7 ? 1 : s <= 13 ? 2 : 3
-})
+const liveLevel = computed(() => levelOf(liveScore.value))
 
 function pick(qi: number, oi: number) {
   answers.value[qi] = oi
@@ -37,39 +37,33 @@ function pick(qi: number, oi: number) {
 }
 
 async function submit() {
-  if (!complete.value) {
-    message.value = '请先完成全部题目'
-    return
-  }
+  if (!complete.value || risk.state.saving) return
   try {
     const rec = await risk.submit(answers.value)
+    done.value = true
     message.value = `测评完成：${rec.score} 分 → ${levelLabel(rec.level)}`
-    // 稍作停留让用户看到结果，再回到上一页
-    window.setTimeout(() => router.back(), 900)
+    window.setTimeout(() => router.back(), 1000)
   } catch (e: any) {
     message.value = e?.message ?? '提交失败'
   }
 }
 
-onMounted(() => {
-  // 已有档案时回填答案，方便用户复核每题的选择
-  const r = risk.record.value
-  if (r && Array.isArray(r.answers) && r.answers.length === RISK_QUESTIONS.length) {
-    answers.value = [...r.answers]
-  }
+onMounted(async () => {
+  // 强制从服务端取最新状态：切账号、换设备、重装后都能正确显示
+  await risk.refresh(true)
 })
 </script>
 
 <template>
-  <div class="page">
-    <AppBar back title="风险承受能力测评" />
+  <div class="page" style="padding-bottom: 20px">
+    <AppBar back title="风险偏好测评" />
 
     <section class="px" style="padding-top: 10px">
       <div class="card intro">
         <div class="intro-title">先做一次测评，再谈风险偏好</div>
         <p class="intro-text">
-          共 {{ RISK_QUESTIONS.length }} 题，约 1 分钟。测评结果用于为你展示适配的风险画像指标，
-          不影响撮合规则。题目口径变化后旧结果会失效，需要重新作答。
+          共 {{ RISK_QUESTIONS.length }} 题，约 1 分钟。结果用于展示你适配的风险偏好等级，
+          不影响撮合规则。可随时重新测评，以最后一次为准。
         </p>
         <div v-if="risk.assessed.value" class="done-row">
           <span class="done-tag" :style="{ color: levelTone(risk.level.value) }">
@@ -77,14 +71,22 @@ onMounted(() => {
           </span>
           <span class="text-xs">{{ fmtDateTime(risk.assessedAt.value) }} 完成</span>
         </div>
+        <div v-else class="done-row">
+          <span class="text-xs" style="color: var(--c-text-3)">尚未测评</span>
+        </div>
       </div>
     </section>
 
     <section v-for="(q, qi) in RISK_QUESTIONS" :key="q.id" class="px">
       <div class="card q-card">
         <div class="q-title"><span class="q-no">{{ qi + 1 }}</span>{{ q.title }}</div>
-        <button v-for="(opt, oi) in q.options" :key="oi" class="q-opt" :class="{ on: answers[qi] === oi }"
-          @click="pick(qi, oi)">
+        <button
+          v-for="(opt, oi) in q.options"
+          :key="oi"
+          class="q-opt"
+          :class="{ on: answers[qi] === oi }"
+          @click="pick(qi, oi)"
+        >
           <span class="dot" />
           <span class="q-label">{{ opt.label }}</span>
         </button>
@@ -100,7 +102,7 @@ onMounted(() => {
       </div>
     </section>
 
-    <p v-if="message" class="msg px">{{ message }}</p>
+    <p v-if="message" class="msg px" :class="{ err: !done && message }">{{ message }}</p>
 
     <section class="px">
       <button class="btn btn-primary btn-block" :disabled="!complete || risk.state.saving" @click="submit">
@@ -109,7 +111,7 @@ onMounted(() => {
     </section>
 
     <p class="disclaimer px">
-      测评结果仅用于产品内风险画像展示；本系统为模拟交易环境，不构成任何投资建议。
+      测评结果仅用于产品内风险偏好展示；本系统为模拟交易环境，不构成任何投资建议。
     </p>
   </div>
 </template>
@@ -215,6 +217,9 @@ onMounted(() => {
   font-size: 12px;
   color: #69e2a5;
   margin: 10px 0 0;
+}
+.msg.err {
+  color: #ff8b8d;
 }
 .disclaimer {
   font-size: 10px;

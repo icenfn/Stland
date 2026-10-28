@@ -3,10 +3,11 @@ import type { RouteRecordRaw } from 'vue-router'
 /**
  * 路由表：只保留客户端职责内的页面。
  *
- * 说明（对应本轮改造）：
- *  · 删除 /trade：下单不再占一个整页，改为在首页 / 个股页弹出的底部抽屉；
- *  · 删除 /admin：客户端不再管理账户与标的，运营后台由服务端 WebUI（/docs 与 /api/admin）负责；
- *  · 新增 /risk：风险偏好必须通过问卷测评得出，不再是三个按钮随手一点。
+ * 本轮变化：
+ *  · 新增 /watch：自选股成为一级入口（底部 Tab），支持分组切换；
+ *  · 新增 /index/:code：指数与个股一样有代码，可以点进去看详情；
+ *  · /stock/:code 与 /index/:code 分开：两者详情信息结构不同（指数没有盘口、
+ *    不可下单），共用一个页面会到处 if/else，不如各自一份清晰的模板。
  */
 export const routes: RouteRecordRaw[] = [
   {
@@ -28,10 +29,22 @@ export const routes: RouteRecordRaw[] = [
     meta: { title: '行情', tab: 'market' },
   },
   {
+    path: '/watch',
+    name: 'watch',
+    component: () => import('./views/WatchView.vue'),
+    meta: { title: '自选', tab: 'watch' },
+  },
+  {
     path: '/stock/:code',
     name: 'stock',
     component: () => import('./views/StockView.vue'),
     meta: { title: '详情' },
+  },
+  {
+    path: '/index/:code',
+    name: 'index',
+    component: () => import('./views/IndexView.vue'),
+    meta: { title: '指数' },
   },
   {
     path: '/orders',
@@ -50,7 +63,7 @@ export const routes: RouteRecordRaw[] = [
     path: '/risk',
     name: 'risk',
     component: () => import('./views/RiskView.vue'),
-    meta: { title: '风险测评' },
+    meta: { title: '风险偏好测评' },
   },
   {
     path: '/profile',

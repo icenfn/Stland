@@ -38,6 +38,12 @@ const feedLabel = computed(() => {
   return '连接中'
 })
 
+/** 指数也有代码，点击进入指数详情（与个股同一套入口语义） */
+function openIndex(code?: string) {
+  if (!code) return
+  void router.push(`/index/${code}`)
+}
+
 onMounted(() => market.start(1500))
 onBeforeUnmount(() => market.stop())
 </script>
@@ -55,9 +61,9 @@ onBeforeUnmount(() => market.stop())
       </div>
     </header>
 
-    <!-- 指数卡 -->
+    <!-- 指数卡：指数也有代码，点进去看详情（与个股同一套入口语义） -->
     <section class="px sect">
-      <div class="card index-card">
+      <div class="card index-card" @click="openIndex(index?.code)">
         <div class="row-between">
           <div class="grow">
             <div class="index-name">{{ index?.name ?? '股岛综合指数' }}</div>

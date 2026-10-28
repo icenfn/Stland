@@ -20,7 +20,8 @@ const risk = useRisk()
 const user = computed(() => auth.state.user)
 
 const roleLabel = computed(() => {
-  const map: Record<string, string> = { retail: '零售', institution: '机构', admin: '管理员' }
+  // 交易账户只有零售与机构；管理员是服务端独立表，不会出现在客户端身份里
+  const map: Record<string, string> = { retail: '零售', institution: '机构' }
   return map[user.value?.role ?? 'retail'] ?? ''
 })
 

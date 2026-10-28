@@ -1,8 +1,10 @@
 <script setup lang="ts">
 /** 行情页：全部标的 + 搜索 + 板块筛选 + 排序 + 热词标签 */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { useMarket } from '@/stores/market'
 import { marketApi } from '@/api'
+import type { IndexQuote } from '@/api/types'
 import QuoteRow from '@/components/QuoteRow.vue'
 import { fmtPct } from '@/utils/format'
 
@@ -14,6 +16,9 @@ const industry = ref('')
 const sort = ref('change_pct')
 const industries = ref<Array<{ industry: string; count: number; change_pct: number }>>([])
 const loading = ref(false)
+const router = useRouter()
+/** 指数和个股一样有代码，独立成一组入口（不可交易，但可看详情） */
+const indices = ref<IndexQuote[]>([])
 
 const sortOptions = [
   { value: 'change_pct', label: '涨幅' },
@@ -47,6 +52,12 @@ onMounted(async () => {
   } catch {
     industries.value = []
   }
+  try {
+    const res = await marketApi.indexList()
+    indices.value = res.items
+  } catch {
+    indices.value = []
+  }
 })
 onBeforeUnmount(() => {
   market.stop()
@@ -67,6 +78,24 @@ onBeforeUnmount(() => {
         </div>
       </div>
     </header>
+
+    <!-- 指数：与个股同一套浏览语义，点击进入指数详情 -->
+    <div v-if="indices.length" class="idx-strip">
+      <button
+        v-for="idx in indices"
+        :key="idx.code"
+        class="idx-card"
+        @click="router.push(`/index/${idx.code}`)"
+      >
+        <span class="idx-name">{{ idx.name }}</span>
+        <span class="idx-price tabular" :class="idx.change_pct > 0 ? 'up' : idx.change_pct < 0 ? 'down' : 'flat'">
+          {{ idx.price.toFixed(2) }}
+        </span>
+        <span class="idx-pct tabular" :class="idx.change_pct > 0 ? 'up' : idx.change_pct < 0 ? 'down' : 'flat'">
+          {{ fmtPct(idx.change_pct) }}
+        </span>
+      </button>
+    </div>
 
     <!-- 板块筛选 -->
     <div class="chips">
@@ -123,6 +152,42 @@ onBeforeUnmount(() => {
 }
 .search-input::placeholder {
   color: var(--c-text-3);
+}
+
+.idx-strip {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 10px 14px 2px;
+  scrollbar-width: none;
+}
+.idx-strip::-webkit-scrollbar {
+  display: none;
+}
+.idx-card {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 104px;
+  background: var(--c-card);
+  border: 1px solid var(--c-line);
+  border-radius: 10px;
+  padding: 8px 10px;
+  cursor: pointer;
+}
+.idx-name {
+  font-size: 10px;
+  color: var(--c-text-3);
+  white-space: nowrap;
+}
+.idx-price {
+  font-size: 15px;
+  font-weight: 700;
+}
+.idx-pct {
+  font-size: 10px;
 }
 
 .chips {

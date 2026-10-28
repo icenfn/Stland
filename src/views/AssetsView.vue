@@ -1,37 +1,34 @@
 <script setup lang="ts">
 /**
- * 资产页：总资产 / 风险偏好 / 业绩 / 持仓。
+ * 资产页：总资产 / 风险偏好 / 持仓。
  *
- * 本轮结构调整：
- *  · 删除「风险画像」卡片（持仓数 / 集中度 HHI / 组合β / 现金比）。
- *    这四个指标与下方的持仓明细、资产构成高度重复，且 HHI/β 对普通用户
- *    没有可执行的决策含义，属于「为展示而展示」的冗余模块；
- *  · 把「风险偏好」从「我的」页迁到这里。风险偏好本质是资金属性，
- *    与资产、持仓同屏才有意义（用户看完风险等级，紧接着就看见自己的仓位）；
- *  · 持仓与流水时间戳一律经 toMillis 归一化（服务端是秒级时间戳，
- *    直接按毫秒渲染会显示成 1970 年）。
+ * 本轮两处删减：
+ *  · 删除「单位」相关处理：原来金额走 fmtAmount 压成「12.34 万 / 1.23 亿」，
+ *    用户核对「我到底有多少钱」还得心算还原。金额是精确量，不是观测量，
+ *    改为千分位纯数字直出（fmtMoney），标签上也不再带（元）。
+ *  · 删除「业绩表现」卡片及其接口调用：模拟盘里从成交记录反推的收益曲线
+ *    既不准也没有产品意义，留着只会误导用户对自己收益的判断。
+ *
+ * 保留的结构调整：风险偏好仍在资产页（与资金属性同屏），且未测评时
+ * 只显示「开始风险测评」按钮、不显示任何等级 —— 判据完全来自服务端。
  */
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useIntervalFn } from '@vueuse/core'
 import { accountApi } from '@/api'
 import type { AccountSummary, PositionItem } from '@/api/types'
 import AppBar from '@/components/AppBar.vue'
-import MiniChart from '@/components/MiniChart.vue'
-import { fmtAgo, fmtAmount, fmtDateTime, fmtPct, fmtPrice, trendClass } from '@/utils/format'
+import { fmtAgo, fmtDateTime, fmtMoney, fmtPct, fmtPrice, fmtSignedMoney, trendClass } from '@/utils/format'
 import { levelLabel, levelTone, useRisk } from '@/stores/risk'
 
 const router = useRouter()
 const risk = useRisk()
 const summary = ref<AccountSummary | null>(null)
 const positions = ref<PositionItem[]>([])
-const perf = ref<{ curve: Array<{ t: number; equity: number }>; metrics: any } | null>(null)
 const error = ref('')
 const updatedAt = ref(0)
 
 const asset = computed(() => summary.value?.asset)
-
-const curvePoints = computed(() => (perf.value?.curve ?? []).map((p) => ({ t: p.t, price: p.equity })))
 
 async function refresh() {
   try {
@@ -45,21 +42,11 @@ async function refresh() {
   }
 }
 
-async function loadPerf() {
-  try {
-    perf.value = await accountApi.performance()
-  } catch {
-    perf.value = null
-  }
-}
-
 useIntervalFn(refresh, 4000)
 
 onMounted(async () => {
-  await refresh()
-  await loadPerf()
+  await Promise.all([refresh(), risk.refresh()])
 })
-onBeforeUnmount(() => {})
 </script>
 
 <template>
@@ -71,22 +58,22 @@ onBeforeUnmount(() => {})
       </template>
     </AppBar>
 
-    <!-- 资产卡 -->
+    <!-- 资产卡：纯数字，不带单位 -->
     <section class="px sect">
       <div class="card asset-card">
-        <div class="label">总资产（元）</div>
-        <div class="total tabular">{{ fmtAmount(asset?.total_asset ?? 0) }}</div>
+        <div class="label">总资产</div>
+        <div class="total tabular">{{ fmtMoney(asset?.total_asset ?? 0) }}</div>
         <div class="pnl-row">
           <div class="pnl">
             <div class="text-xs">当日盈亏</div>
             <div class="tabular pnl-v" :class="trendClass(asset?.day_pnl ?? 0)">
-              {{ (asset?.day_pnl ?? 0) > 0 ? '+' : '' }}{{ fmtPrice(asset?.day_pnl ?? 0) }}
+              {{ fmtSignedMoney(asset?.day_pnl ?? 0) }}
             </div>
           </div>
           <div class="pnl">
             <div class="text-xs">累计已实现</div>
             <div class="tabular pnl-v" :class="trendClass(asset?.realized_pnl ?? 0)">
-              {{ (asset?.realized_pnl ?? 0) > 0 ? '+' : '' }}{{ fmtPrice(asset?.realized_pnl ?? 0) }}
+              {{ fmtSignedMoney(asset?.realized_pnl ?? 0) }}
             </div>
           </div>
         </div>
@@ -94,21 +81,21 @@ onBeforeUnmount(() => {})
         <div class="asset-grid">
           <div class="ag-item">
             <span class="k">可用资金</span>
-            <span class="v tabular">{{ fmtAmount(asset?.cash ?? 0) }}</span>
+            <span class="v tabular">{{ fmtMoney(asset?.cash ?? 0) }}</span>
           </div>
           <div class="ag-item">
             <span class="k">冻结资金</span>
-            <span class="v tabular">{{ fmtAmount(asset?.frozen_cash ?? 0) }}</span>
+            <span class="v tabular">{{ fmtMoney(asset?.frozen_cash ?? 0) }}</span>
           </div>
           <div class="ag-item">
             <span class="k">持仓市值</span>
-            <span class="v tabular">{{ fmtAmount(asset?.market_value ?? 0) }}</span>
+            <span class="v tabular">{{ fmtMoney(asset?.market_value ?? 0) }}</span>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- 风险偏好：未测评时不显示等级，只给测评入口 -->
+    <!-- 风险偏好：未测评不显示等级，只给测评入口 -->
     <section class="px">
       <div class="card">
         <div class="row-between">
@@ -125,31 +112,13 @@ onBeforeUnmount(() => {})
               {{ risk.score.value }} 分 · {{ fmtDateTime(risk.assessedAt.value) }}
             </span>
           </div>
-          <p class="text-xs hint">
-            风险偏好用于匹配你可承受的仓位波动；等级随测评结果更新，口径调整后需重新测评。
-          </p>
+          <p class="text-xs hint">风险偏好用于匹配你可承受的仓位波动。</p>
         </template>
-        <p v-else class="text-xs hint">
-          尚未完成风险测评，因此不显示风险偏好。先答 5 道题，再得到结论。
-        </p>
+        <p v-else class="text-xs hint">尚未完成风险测评，因此不显示风险偏好。</p>
 
         <button class="btn btn-ghost btn-block risk-btn" @click="router.push('/risk')">
           {{ risk.assessed.value ? '重新测评' : '开始风险测评' }}
         </button>
-      </div>
-    </section>
-
-    <!-- 业绩 -->
-    <section v-if="perf && perf.metrics" class="px">
-      <div class="card">
-        <div class="card-h">业绩表现</div>
-        <MiniChart :minutes="curvePoints" :prev-close="curvePoints[0]?.price ?? 0" :height="90" />
-        <div class="perf-grid">
-          <div class="pf"><span class="pf-v tabular">{{ fmtPct(perf.metrics.total_return_pct) }}</span><span class="pf-k">总收益率</span></div>
-          <div class="pf"><span class="pf-v tabular">{{ perf.metrics.sharpe }}</span><span class="pf-k">夏普比率</span></div>
-          <div class="pf"><span class="pf-v tabular down">{{ perf.metrics.max_drawdown_pct }}%</span><span class="pf-k">最大回撤</span></div>
-          <div class="pf"><span class="pf-v tabular">{{ perf.metrics.win_rate_pct }}%</span><span class="pf-k">胜率</span></div>
-        </div>
       </div>
     </section>
 
@@ -176,7 +145,7 @@ onBeforeUnmount(() => {})
           </div>
         </div>
         <div class="hm">
-          <div class="tabular hmv" :class="trendClass(p.unrealized_pnl)">{{ fmtPrice(p.market_value) }}</div>
+          <div class="tabular hmv" :class="trendClass(p.unrealized_pnl)">{{ fmtMoney(p.market_value) }}</div>
           <div class="text-xs tabular" :class="trendClass(p.unrealized_pnl)">{{ fmtPct(p.unrealized_pct) }}</div>
         </div>
       </div>
@@ -198,11 +167,6 @@ onBeforeUnmount(() => {})
   font-size: 11px;
   padding: 5px 10px;
   cursor: pointer;
-}
-.mini-btn.accent {
-  color: #ff8b8d;
-  border-color: rgba(232, 56, 61, 0.4);
-  background: rgba(232, 56, 61, 0.12);
 }
 .upd-tag {
   font-size: 10px;
@@ -243,14 +207,17 @@ onBeforeUnmount(() => {})
   display: flex;
   flex-direction: column;
   gap: 3px;
+  min-width: 0;
 }
 .ag-item .k {
   font-size: 10px;
   color: var(--c-text-3);
 }
 .ag-item .v {
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .card-h {
   font-size: 13px;
@@ -277,29 +244,6 @@ onBeforeUnmount(() => {})
   margin-top: 12px;
   font-size: 13px;
   padding: 10px 16px;
-}
-.perf-grid {
-  display: flex;
-  gap: 6px;
-  margin-top: 10px;
-}
-.pf {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 3px;
-  padding: 8px 0;
-  background: var(--c-bg-elevated);
-  border-radius: 10px;
-}
-.pf-v {
-  font-size: 15px;
-  font-weight: 700;
-}
-.pf-k {
-  font-size: 10px;
-  color: var(--c-text-3);
 }
 .holdings {
   margin-top: 12px;

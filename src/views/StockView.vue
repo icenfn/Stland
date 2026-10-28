@@ -1,17 +1,24 @@
 <script setup lang="ts">
 /**
- * 个股详情：价格区 + (K线/分时 ⇄ 五档盘口) 双栏 + 题材 + 交易条。
+ * 个股详情：价格区 + (K线/分时 ⇄ 五档盘口) 双栏 + 题材 + 交易条 + 加为自选。
  *
- * 版式取舍：图表与盘口左右 2:1 并排。
+ * 版式取舍：图表与盘口左右 **3:1** 并排。
  * 看盘的固定动作是「看走势、验证盘口」，两者需要同屏对照：
- * 上一版把盘口放在图表下方整行，手机上需要滚屏才能把当前价与卖一/买一对上，
- * 体验割裂。改成 2:1 后，图表仍占主视野（约 66%），盘口在右侧窄栏列出
- * 卖5→买5 十档，与图表同一水平线，扫一眼即可完成「走势+挂单」比对。
+ * 上一版盘口在图表下方整行，手机上要滚屏才能把当前价与卖一/买一对上；
+ * 改成 2:1 后盘口虽同屏，但图表被挤得偏窄，K 线细节（影线、量能台阶）看不清。
+ * 本次改为 3:1：图表占主视野（75%），盘口右侧窄栏列出卖5→买5 十档，
+ * 既保住同屏对照，也让图表重新有足够横向空间。
+ *
+ * 边距修复：上一版 `.quote-row` 自带 14px 横向内边距，而内部 `.card` 又通过
+ * `.card { margin: 0 14px 12px }` 再加一层外边距，两处叠加导致图表卡片左右
+ * 各多出 14px、上下也不对称 —— 视觉上就是「图表卡片缩在中间、边距发虚」。
+ * 现在 `.quote-row` 作为唯一的横向留白来源，卡片自身 margin 归零，
+ * 图表 canvas 的左右内边距统一为 6px（与五档列对齐），上下留白一致。
  */
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useIntervalFn } from '@vueuse/core'
-import { marketApi, tradeApi } from '@/api'
+import { marketApi, watchApi } from '@/api'
 import type { BarItem, Depth, MinutePoint, Quote, StockMeta } from '@/api/types'
 import AppBar from '@/components/AppBar.vue'
 import MiniChart from '@/components/MiniChart.vue'
@@ -31,9 +38,13 @@ const mode = ref<'minute' | 'kline'>('minute')
 const period = ref('1min')
 const error = ref('')
 
-/** 下单抽屉：不再跳转整页，保留当前个股的图表与盘口上下文 */
+/** 下单抽屉：不跳转整页，保留当前个股的图表与盘口上下文 */
 const sheetShow = ref(false)
 const sheetSide = ref<'buy' | 'sell'>('buy')
+
+/** 自选状态：进页面时读服务端，避免本地记的和账号实际不一致 */
+const watching = ref(false)
+const watchBusy = ref(false)
 
 function openSheet(side: 'buy' | 'sell') {
   sheetSide.value = side
@@ -41,7 +52,6 @@ function openSheet(side: 'buy' | 'sell') {
 }
 
 async function onSubmitted() {
-  // 成交后立刻刷新盘口与价格，用户能马上看到结果
   await Promise.all([loadMeta(), loadDepth()])
 }
 
@@ -52,6 +62,7 @@ async function loadMeta() {
     const res = await marketApi.detail(code)
     quote.value = res.quote
     meta.value = res.meta
+    error.value = ''
   } catch (e: any) {
     error.value = e?.message ?? '加载失败'
   }
@@ -79,6 +90,38 @@ async function loadChart() {
   }
 }
 
+async function loadWatch() {
+  try {
+    const res = await watchApi.status(code)
+    watching.value = res.watching
+  } catch {
+    /* 未登录或接口异常时不阻塞行情展示 */
+  }
+}
+
+/**
+ * 加为自选 / 取消自选。
+ * 加入走「幂等」接口：已在自选时服务端会把它移动到默认分组而不是报错，
+ * 所以按钮可以放心连点，不需要先查状态再决定调哪个接口。
+ */
+async function toggleWatch() {
+  if (watchBusy.value) return
+  watchBusy.value = true
+  try {
+    if (watching.value) {
+      await watchApi.remove(code)
+      watching.value = false
+    } else {
+      await watchApi.add(code)
+      watching.value = true
+    }
+  } catch {
+    /* 失败保持原状态，避免按钮与真实状态脱节 */
+  } finally {
+    watchBusy.value = false
+  }
+}
+
 async function switchMode(m: 'minute' | 'kline') {
   mode.value = m
   await loadChart()
@@ -103,7 +146,7 @@ useIntervalFn(async () => {
 }, 2000)
 
 onMounted(async () => {
-  await Promise.all([loadMeta(), loadDepth(), loadChart()])
+  await Promise.all([loadMeta(), loadDepth(), loadChart(), loadWatch()])
 })
 </script>
 
@@ -118,6 +161,13 @@ onMounted(async () => {
       </template>
       <template #actions>
         <span v-if="meta" class="tag tag-blue">{{ meta.board }}</span>
+        <button class="watch-btn" :class="{ on: watching }" :disabled="watchBusy" @click="toggleWatch">
+          <svg viewBox="0 0 24 24" class="wico" :fill="watching ? 'currentColor' : 'none'"
+            stroke="currentColor" stroke-width="1.6" stroke-linejoin="round">
+            <path d="M12 3.6l2.6 5.4 5.9.8-4.3 4.2 1 5.9-5.2-2.8-5.2 2.8 1-5.9L3.5 9.8l5.9-.8z" />
+          </svg>
+          <span>{{ watching ? '已自选' : '加为自选' }}</span>
+        </button>
       </template>
     </AppBar>
 
@@ -134,7 +184,8 @@ onMounted(async () => {
           </div>
         </div>
         <div class="stat-row">
-          <div class="stat"><span class="k">今开</span><span class="v tabular" :class="trendClass((quote?.open ?? 0) - (quote?.prev_close ?? 0))">{{ fmtPrice(quote?.open ?? 0) }}</span></div>
+          <div class="stat"><span class="k">今开</span><span class="v tabular"
+            :class="trendClass((quote?.open ?? 0) - (quote?.prev_close ?? 0))">{{ fmtPrice(quote?.open ?? 0) }}</span></div>
           <div class="stat"><span class="k">最高</span><span class="v tabular up">{{ fmtPrice(quote?.high ?? 0) }}</span></div>
           <div class="stat"><span class="k">最低</span><span class="v tabular down">{{ fmtPrice(quote?.low ?? 0) }}</span></div>
           <div class="stat"><span class="k">昨收</span><span class="v tabular">{{ fmtPrice(quote?.prev_close ?? 0) }}</span></div>
@@ -147,7 +198,7 @@ onMounted(async () => {
         </div>
       </section>
 
-      <!-- 图表 : 盘口 = 2 : 1 -->
+      <!-- 图表 : 盘口 = 3 : 1 -->
       <section class="quote-row">
         <div class="card chart-card">
           <div class="chart-tabs">
@@ -157,8 +208,8 @@ onMounted(async () => {
             <button class="ctab" :class="{ on: mode === 'kline' && period === '15min' }" @click="switchPeriod('15min')">15分</button>
             <button class="ctab" :class="{ on: mode === 'kline' && period === '60min' }" @click="switchPeriod('60min')">60分</button>
           </div>
-          <MiniChart v-if="mode === 'minute'" :minutes="minutes" :prev-close="quote?.prev_close ?? 0" :height="176" />
-          <MiniChart v-else mode="kline" :bars="bars" :height="176" />
+          <MiniChart v-if="mode === 'minute'" :minutes="minutes" :prev-close="quote?.prev_close ?? 0" :height="180" />
+          <MiniChart v-else mode="kline" :bars="bars" :height="180" />
         </div>
 
         <div class="card depth-card">
@@ -245,6 +296,8 @@ onMounted(async () => {
   font-size: 12px;
   font-weight: 600;
 }
+
+/* 横向留白只由这一层提供，卡片自身 margin 归零，避免两层边距叠加 */
 .quote-row {
   display: flex;
   gap: 8px;
@@ -252,20 +305,24 @@ onMounted(async () => {
   align-items: stretch;
 }
 .chart-card {
-  flex: 2 1 0;
+  flex: 3 1 0;
   min-width: 0;
   margin: 0;
-  padding: 10px 8px;
+  padding: 10px 6px 8px;
 }
 .depth-card {
   flex: 1 1 0;
-  min-width: 118px;
+  min-width: 104px;
+  max-width: 132px;
   margin: 0;
-  padding: 10px 10px;
+  padding: 10px 8px;
 }
 .depth-card .card-title {
   font-size: 12px;
   margin-bottom: 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .spread {
   height: 1px;
@@ -275,7 +332,7 @@ onMounted(async () => {
 .chart-tabs {
   display: flex;
   gap: 4px;
-  padding: 0 6px 8px;
+  padding: 0 2px 6px;
 }
 .ctab {
   background: none;
@@ -307,7 +364,7 @@ onMounted(async () => {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 4px;
+  gap: 3px;
   font-size: 11px;
   padding: 2.5px 0;
 }
@@ -320,10 +377,8 @@ onMounted(async () => {
   text-align: right;
 }
 .dv {
-  flex: 0 0 42px;
+  flex: 0 0 38px;
   text-align: right;
-}
-.dv {
   color: var(--c-text-2);
 }
 .meta-line {
@@ -336,6 +391,28 @@ onMounted(async () => {
   color: var(--c-text-3);
   width: 52px;
   flex: 0 0 52px;
+}
+.watch-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--c-line);
+  border-radius: 8px;
+  color: var(--c-text-2);
+  font-size: 11px;
+  padding: 5px 9px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.watch-btn.on {
+  color: var(--c-brand);
+  border-color: rgba(232, 56, 61, 0.45);
+  background: rgba(232, 56, 61, 0.12);
+}
+.wico {
+  width: 13px;
+  height: 13px;
 }
 .trade-bar {
   position: fixed;

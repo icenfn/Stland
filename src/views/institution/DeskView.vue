@@ -74,7 +74,8 @@ onMounted(refresh)
         <div class="kpi-grid">
           <div class="kg"><span class="kg-k">可用资金</span><span class="kg-v tabular">{{ fmtAmount(asset?.cash ?? 0) }}</span></div>
           <div class="kg"><span class="kg-k">持仓市值</span><span class="kg-v tabular">{{ fmtAmount(asset?.market_value ?? 0) }}</span></div>
-          <div class="kg"><span class="kg-k">组合β</span><span class="kg-v tabular">{{ (risk?.portfolio_beta ?? 0).toFixed(2) }}</span></div>
+          <!-- 组合β 等「风险画像」衍生指标已随服务端一并删除；这里改为展示真实账务字段 -->
+          <div class="kg"><span class="kg-k">冻结资金</span><span class="kg-v tabular">{{ fmtAmount(asset?.frozen_cash ?? 0) }}</span></div>
         </div>
       </div>
     </section>

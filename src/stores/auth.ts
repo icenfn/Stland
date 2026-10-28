@@ -18,17 +18,21 @@ const state = reactive({
 export const tokenStore = useStorage<string>(TOKEN_KEY, '')
 export const userStore = useStorage<UserProfile | null>(USER_KEY, null)
 
-/** 角色能力矩阵：同一客户端内三种形态共用一套路由，按权限显隐入口 */
+/**
+ * 角色能力矩阵：交易账户只有零售与机构两种。
+ *
+ * 管理员已从交易账户体系迁到服务端独立的 `admin` 表（见服务端 models.py），
+ * 后台面板是 `/admin/` 独立页面，不再由本客户端承载 —— 因此这里既没有
+ * `admin` 角色，也没有 `admin.*` 能力项。客户端不再判断「是不是管理员」。
+ */
 const CAPABILITIES: Record<Role, string[]> = {
   retail: ['market.read', 'trade.own', 'account.own'],
   institution: ['market.read', 'trade.own', 'account.own', 'inst.desk', 'inst.credit'],
-  admin: ['market.read', 'admin.all', 'admin.users', 'admin.audit', 'admin.settle'],
 }
 
 export function useAuth() {
   const isLoggedIn = computed(() => Boolean(tokenStore.value && state.user))
   const role = computed<Role>(() => state.user?.role ?? 'retail')
-  const isAdmin = computed(() => role.value === 'admin')
   const isInstitution = computed(() => role.value === 'institution')
 
   function can(capability: string): boolean {
@@ -112,7 +116,6 @@ export function useAuth() {
     state: readonly(state),
     isLoggedIn,
     role,
-    isAdmin,
     isInstitution,
     can,
     login,

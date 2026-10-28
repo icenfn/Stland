@@ -21,6 +21,28 @@ export function fmtAmount(value: number): string {
   return value.toFixed(2)
 }
 
+/**
+ * 不带单位的金额：千分位分隔的纯数字。
+ *
+ * 资产页按要求改为「直接显示数字」—— 原来的万/亿压缩虽然省字，
+ * 但用户核对「我到底有多少钱」时必须心算还原，反而更费劲。
+ * 金额是精确量，不是需要被压缩的观测量，所以这里给完整数值 + 千分位。
+ */
+export function fmtMoney(value: number, digits = 2): string {
+  if (!Number.isFinite(value)) return '--'
+  return value.toLocaleString('zh-CN', {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  })
+}
+
+/** 带符号的金额（盈亏用）：+12,345.67 / -890.00 */
+export function fmtSignedMoney(value: number, digits = 2): string {
+  if (!Number.isFinite(value)) return '--'
+  const sign = value > 0 ? '+' : ''
+  return `${sign}${fmtMoney(value, digits)}`
+}
+
 /** 成交量：股 → 手（1 手 = 100 股） */
 export function fmtVolume(shares: number): string {
   if (!Number.isFinite(shares)) return '--'
