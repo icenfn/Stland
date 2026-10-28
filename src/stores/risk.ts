@@ -9,8 +9,12 @@
  *
  * 本版口径：服务端在 `user` 行上写 `risk_assessed_at`（时间戳），
  * 客户端每次进入页面都从 `/api/account/risk` 读，`assessed` 由时间戳决定。
- * 本地只保留一份缓存用于首屏不闪，回读后一以服务端为准；不再有版本号失效逻辑
- * （问卷版本变化由服务端复算分数处理，不需要客户端作废旧记录）。
+ * 本地只保留一份缓存用于首屏不闪，回读后一以服务端为准；不再有版本号失效逻辑。
+ *
+ * 不存答题情况、不存总分：
+ *  · 答案只活在测评页的当次内存里，提交后即丢，不写 localStorage、不回填；
+ *  · 总分是问卷内部换算量，服务端不返回，客户端也就没有这个概念，
+ *    界面只呈现「保守型 / 稳健型 / 进取型」这一件事。
  */
 import { computed, reactive } from 'vue'
 import { accountApi } from '@/api'
@@ -80,7 +84,7 @@ export const RISK_QUESTIONS: RiskQuestion[] = [
   },
 ]
 
-/** 与服务端 score_to_level 一致：按满分三等分切档 */
+/** 与服务端 level_of_answers 一致：按满分三等分切档（只在提交前做预期提示） */
 const HALF = 30 / 3
 
 export function levelOf(score: number): 1 | 2 | 3 {
@@ -103,7 +107,7 @@ export function levelTone(level: number | undefined): string {
   return '#6b7789'
 }
 
-const EMPTY: RiskProfile = { assessed: false, level: 0, label: '未测评', score: 0, assessed_at: 0 }
+const EMPTY: RiskProfile = { assessed: false, level: 0, label: '未测评', assessed_at: 0 }
 
 const state = reactive({
   profile: { ...EMPTY } as RiskProfile,
@@ -121,7 +125,6 @@ export function useRisk() {
 
   /** 未测评时等级恒为 0，页面据此只显示「开始风险测评」 */
   const level = computed(() => (state.profile.assessed ? state.profile.level : 0))
-  const score = computed(() => (state.profile.assessed ? state.profile.score : 0))
   const assessedAt = computed(() => (state.profile.assessed ? state.profile.assessed_at : 0))
   const label = computed(() => levelLabel(level.value))
 
@@ -148,7 +151,7 @@ export function useRisk() {
     }
   }
 
-  /** 提交测评：只传答案，分数与等级由服务端复算后回传，以回传值为准 */
+  /** 提交测评：答案随请求发出即丢，等级由服务端换算后回传，以回传值为准 */
   async function submit(answers: number[]): Promise<RiskProfile> {
     state.saving = true
     state.error = ''
@@ -177,5 +180,5 @@ export function useRisk() {
     state.error = ''
   }
 
-  return { state, assessed, level, score, assessedAt, label, refresh, submit, reset }
+  return { state, assessed, level, assessedAt, label, refresh, submit, reset }
 }

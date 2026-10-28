@@ -2,12 +2,16 @@
 /**
  * 风险偏好测评：5 题问卷 → 分数 → 等级（服务端复算并存档）。
  *
- * 关键点（对应本轮需求「测评后重进软件又显示开始风险测评」）：
- *  · 页面不再读写任何本地档案。是否已测评只认服务端 `risk_assessed_at`；
- *  · 进入页面先 `refresh(true)` 强制拉一次服务端状态，回填上次选择仅用于复核；
- *  · 提交后以服务端回传的等级/分数/时间为准，不使用本地试算值落地。
+ * 关键点（对应「测评后重进软件又显示开始风险测评」）：
+ *  · 页面不读写任何本地档案。是否已测评只认服务端 `risk_assessed_at`；
+ *  · 进入页面先 `refresh(true)` 强制拉一次服务端状态；
+ *  · 提交后以服务端回传的等级/时间为准。
  *
- * 分档口径与服务端完全一致：满分 30，三等分 → <10 保守、<20 稳健、≥20 进取。
+ * 不存储答题情况：答案只存在于本页 `answers` 这个内存 ref 里，离开页面即消失 ——
+ * 不落 localStorage、不落服务端、下次进入也不会回填上次的选择。
+ * 也不呈现总分：只有「已完成 x/5」与提交后的等级结论。
+ *
+ * 分档口径与服务端完全一致：满分三等分 → 下三分之一保守、中间稳健、上三分之一进取。
  */
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
@@ -25,11 +29,15 @@ const done = ref(false)
 const answeredCount = computed(() => answers.value.filter((a) => a >= 0).length)
 const complete = computed(() => answeredCount.value === RISK_QUESTIONS.length)
 
-/** 实时试算：仅用于提交前给用户一个预期，最终以服务端复算为准 */
-const liveScore = computed(() =>
-  RISK_QUESTIONS.reduce((sum, q, i) => sum + (answers.value[i] >= 0 ? q.options[answers.value[i]].score : 0), 0),
+/** 实时预期等级：只算档位、不算总分，最终仍以服务端换算结果为准 */
+const liveLevel = computed(() =>
+  levelOf(
+    RISK_QUESTIONS.reduce(
+      (sum, q, i) => sum + (answers.value[i] >= 0 ? q.options[answers.value[i]].score : 0),
+      0,
+    ),
+  ),
 )
-const liveLevel = computed(() => levelOf(liveScore.value))
 
 function pick(qi: number, oi: number) {
   answers.value[qi] = oi
@@ -41,7 +49,9 @@ async function submit() {
   try {
     const rec = await risk.submit(answers.value)
     done.value = true
-    message.value = `测评完成：${rec.score} 分 → ${levelLabel(rec.level)}`
+    // 提交后立刻抹掉答案：本页不留、别处也没有副本
+    answers.value = new Array(RISK_QUESTIONS.length).fill(-1)
+    message.value = `测评完成：${levelLabel(rec.level)}`
     window.setTimeout(() => router.back(), 1000)
   } catch (e: any) {
     message.value = e?.message ?? '提交失败'
@@ -97,7 +107,7 @@ onMounted(async () => {
       <div class="card result">
         <div class="row-between">
           <span class="text-sm">已完成 {{ answeredCount }}/{{ RISK_QUESTIONS.length }}</span>
-          <span class="score tabular">试算 {{ liveScore }} 分 · {{ levelLabel(liveLevel) }}</span>
+          <span class="score tabular">当前倾向 {{ levelLabel(liveLevel) }}</span>
         </div>
       </div>
     </section>

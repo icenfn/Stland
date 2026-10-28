@@ -9,6 +9,10 @@
  * 本次改为 3:1：图表占主视野（75%），盘口右侧窄栏列出卖5→买5 十档，
  * 既保住同屏对照，也让图表重新有足够横向空间。
  *
+ * 副图切换：图表卡片工具栏第二行可切换「成交量 / MACD」。
+ * 量能与指标要和价格同屏对照才有意义，所以做成主图下方的副图（占 30% 高度、
+ * 独立纵轴、共享横轴），而不是往价格上叠线。
+ *
  * 边距修复：上一版 `.quote-row` 自带 14px 横向内边距，而内部 `.card` 又通过
  * `.card { margin: 0 14px 12px }` 再加一层外边距，两处叠加导致图表卡片左右
  * 各多出 14px、上下也不对称 —— 视觉上就是「图表卡片缩在中间、边距发虚」。
@@ -36,6 +40,8 @@ const minutes = ref<MinutePoint[]>([])
 const bars = ref<BarItem[]>([])
 const mode = ref<'minute' | 'kline'>('minute')
 const period = ref('1min')
+/** 副图：无 / 成交量 / MACD。纯展示切换，不触发任何请求 —— 数据已在主图里 */
+const sub = ref<'none' | 'volume' | 'macd'>('none')
 const error = ref('')
 
 /** 下单抽屉：不跳转整页，保留当前个股的图表与盘口上下文 */
@@ -208,8 +214,20 @@ onMounted(async () => {
             <button class="ctab" :class="{ on: mode === 'kline' && period === '15min' }" @click="switchPeriod('15min')">15分</button>
             <button class="ctab" :class="{ on: mode === 'kline' && period === '60min' }" @click="switchPeriod('60min')">60分</button>
           </div>
-          <MiniChart v-if="mode === 'minute'" :minutes="minutes" :prev-close="quote?.prev_close ?? 0" :height="180" />
-          <MiniChart v-else mode="kline" :bars="bars" :height="180" />
+          <div class="chart-tabs sub-tabs">
+            <span class="sub-label">副图</span>
+            <button class="ctab s" :class="{ on: sub === 'none' }" @click="sub = 'none'">无</button>
+            <button class="ctab s" :class="{ on: sub === 'volume' }" @click="sub = 'volume'">成交量</button>
+            <button class="ctab s" :class="{ on: sub === 'macd' }" @click="sub = 'macd'">MACD</button>
+          </div>
+          <MiniChart
+            v-if="mode === 'minute'"
+            :minutes="minutes"
+            :prev-close="quote?.prev_close ?? 0"
+            :sub="sub"
+            :height="sub === 'none' ? 180 : 210"
+          />
+          <MiniChart v-else mode="kline" :bars="bars" :sub="sub" :height="sub === 'none' ? 180 : 210" />
         </div>
 
         <div class="card depth-card">
@@ -347,6 +365,22 @@ onMounted(async () => {
   color: var(--c-brand);
   background: rgba(232, 56, 61, 0.12);
   font-weight: 600;
+}
+/* 副图行：与周期行分开，避免 8 个按钮挤成一排按不准 */
+.sub-tabs {
+  padding-top: 0;
+  padding-bottom: 4px;
+  align-items: center;
+}
+.sub-label {
+  font-size: 10px;
+  color: var(--c-text-3);
+  padding-right: 2px;
+}
+.ctab.s {
+  font-size: 10px;
+  padding: 2px 5px;
+  border-radius: 6px;
 }
 .card {
   margin: 0 14px 12px;

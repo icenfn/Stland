@@ -195,11 +195,14 @@ export interface PositionItem {
 }
 
 /** 风险偏好：服务端唯一口径，客户端不再自己存等级 */
+/**
+ * 风险偏好：只有「等级 + 测评时间」。
+ * 没有总分 —— 服务端不返回、客户端也不算，避免把问卷内部口径变成用户眼里的评分。
+ */
 export interface RiskProfile {
   assessed: boolean
   level: number
   label: string
-  score: number
   assessed_at: number
 }
 

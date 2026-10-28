@@ -108,9 +108,7 @@ onMounted(async () => {
             <span class="risk-level" :style="{ color: levelTone(risk.level.value) }">
               {{ levelLabel(risk.level.value) }}
             </span>
-            <span class="text-xs tabular">
-              {{ risk.score.value }} 分 · {{ fmtDateTime(risk.assessedAt.value) }}
-            </span>
+            <span class="text-xs tabular">{{ fmtDateTime(risk.assessedAt.value) }}</span>
           </div>
           <p class="text-xs hint">风险偏好用于匹配你可承受的仓位波动。</p>
         </template>
