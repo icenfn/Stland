@@ -111,7 +111,7 @@ onBeforeUnmount(() => {
     </div>
 
     <p class="disclaimer">
-      数据由服务端内置行情引擎实时生成（每 {{ 1.5 }} 秒轮询），非真实市场行情。
+      数据由服务端内置行情引擎生成，优先走 WebSocket 推送、断线时自动降级轮询，非真实市场行情。
     </p>
   </div>
 </template>

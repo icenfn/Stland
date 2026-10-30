@@ -9,6 +9,9 @@
  */
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
+/** 交易时段标签，与服务端 BarItem.segment 对齐 */
+type Segment = 'pre' | 'auction' | 'continuous' | 'lunch' | 'post' | 'closed'
+
 interface Point {
   t: number
   price: number
@@ -16,6 +19,8 @@ interface Point {
   avg?: number
   /** 分时逐点成交量（股），用于成交量副图 */
   volume?: number
+  /** 该点所属时段，用于给竞价/盘前/盘后区间打底色 */
+  segment?: Segment
 }
 interface Bar {
   time: number | string
@@ -24,6 +29,45 @@ interface Bar {
   low: number
   close: number
   volume: number
+  segment?: Segment
+}
+
+/**
+ * 非连续竞价时段的底色。
+ *
+ * 为什么不改变红绿柱本身：红绿是「涨跌」的唯一编码，改掉就分不清方向了。
+ * 用整列半透明底色标注时段，既能看出「这段是集合竞价 / 盘前 / 盘后」，
+ * 又不会和涨跌信息打架。连续竞价不画底色，保持画面干净。
+ */
+const SEGMENT_TINT: Record<string, string> = {
+  pre: 'rgba(96,140,255,0.14)',
+  auction: 'rgba(232,179,57,0.16)',
+  post: 'rgba(150,120,240,0.14)',
+  closed: 'rgba(140,150,165,0.08)',
+}
+
+/** 在给定几何参数下，把相邻同段落的区间铺一层底色 */
+function paintSegments(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  segments: Array<Segment | undefined>,
+) {
+  const n = segments.length
+  if (!n) return
+  const slot = w / n
+  let start = 0
+  while (start < n) {
+    const seg = segments[start]
+    let end = start
+    while (end + 1 < n && segments[end + 1] === seg) end += 1
+    const tint = seg ? SEGMENT_TINT[seg] : undefined
+    if (tint) {
+      ctx.fillStyle = tint
+      ctx.fillRect(slot * start, 0, slot * (end - start + 1), h)
+    }
+    start = end + 1
+  }
 }
 
 const props = withDefaults(
@@ -80,6 +124,9 @@ function drawMinute(ctx: CanvasRenderingContext2D, w: number, h: number) {
   const lo = base - maxDev
   const yOf = (p: number) => h - ((p - lo) / (hi - lo || 1)) * h
   const xOf = (i: number) => (i / Math.max(1, pts.length - 1)) * w
+
+  // 先用底色标出盘前/集合竞价/盘后区间，再画价格线，线压在上面才清楚
+  paintSegments(ctx, w, h, pts.map((p) => p.segment))
 
   // 昨收虚线
   ctx.strokeStyle = 'rgba(255,255,255,0.22)'
@@ -153,6 +200,9 @@ function drawKline(ctx: CanvasRenderingContext2D, w: number, h: number) {
   const yOf = (p: number) => h - ((p - lo) / span) * h
   const slot = w / bars.length
   const bodyW = Math.max(1.5, slot * 0.62)
+
+  // 时段底色：集合竞价/盘前/盘后整列着色，红绿柱本身仍只表示涨跌
+  paintSegments(ctx, w, h, bars.map((b) => b.segment))
 
   bars.forEach((b, i) => {
     const x = slot * i + slot / 2

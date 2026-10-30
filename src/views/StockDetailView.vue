@@ -66,6 +66,29 @@ const period = ref('5min')
 /** 副图：无 / 成交量 / MACD —— 纯展示切换，不产生请求 */
 const sub = ref<'volume' | 'macd' | 'ratio'>('macd')
 
+/**
+ * 当前图表里出现了哪些非连续竞价时段。
+ *
+ * 服务端给每根柱子打了 segment（pre/auction/lunch/post/closed）。这里只挑出
+ * 真正需要提示用户的三种：盘前、集合竞价、盘后 —— 午休和休市本来就没有成交，
+ * 不需要额外解释。有值时才渲染图例，否则图表区保持干净。
+ */
+const SEGMENT_TEXT: Record<string, string> = {
+  pre: '盘前',
+  auction: '集合竞价',
+  post: '盘后',
+}
+
+const segmentsPresent = computed(() => {
+  const src = mode.value === 'minute' ? minutes.value : bars.value
+  const seen = new Set<string>()
+  for (const item of src as Array<{ segment?: string }>) {
+    const seg = item.segment
+    if (seg && SEGMENT_TEXT[seg]) seen.add(seg)
+  }
+  return ['pre', 'auction', 'post'].filter((k) => seen.has(k))
+})
+
 const sheetShow = ref(false)
 const sheetSide = ref<'buy' | 'sell'>('buy')
 
@@ -357,6 +380,13 @@ const title = computed(() => {
             <button class="ctab s" :class="{ on: sub === 'ratio' }" @click="sub = 'ratio'">量比</button>
           </div>
 
+          <!-- 时段图例：只在出现盘前/集合竞价/盘后时显示，说明底色含义 -->
+          <div v-if="segmentsPresent.length" class="seg-legend">
+            <span v-for="k in segmentsPresent" :key="k" class="seg-item" :class="'seg-' + k">
+              <i class="dot" />{{ SEGMENT_TEXT[k] }}
+            </span>
+          </div>
+
           <MiniChart
             v-if="mode === 'minute'"
             :minutes="minutes"
@@ -484,6 +514,30 @@ const title = computed(() => {
 </template>
 
 <style scoped>
+.seg-legend {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 2px 12px 6px;
+  font-size: 11px;
+  color: var(--c-text-2);
+}
+.seg-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+.seg-item .dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  display: inline-block;
+}
+.seg-pre .dot { background: rgba(96, 140, 255, 0.45); }
+.seg-auction .dot { background: rgba(232, 179, 57, 0.5); }
+.seg-post .dot { background: rgba(150, 120, 240, 0.45); }
+
 .page {
   min-height: 100vh;
   padding-bottom: 24px;

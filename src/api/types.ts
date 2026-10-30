@@ -80,6 +80,11 @@ export interface SessionState {
   can_trade: boolean
   trade_date: string
   seconds_left?: number
+  /** 交易模式：a_share=A股 / us=美股 / continuous=连续竞价 */
+  mode?: string
+  mode_label?: string
+  /** 粗粒度时段：pre/auction/continuous/lunch/post/closed */
+  segment?: string
 }
 
 /** 指数快照：现在和个股一样有代码、可跳转详情 */
@@ -172,6 +177,14 @@ export interface Depth {
   asks: DepthLevel[]
 }
 
+/**
+ * K 线柱所属的交易时段。
+ * 服务端按交易模式给出：pre=盘前、auction=集合竞价、continuous=连续竞价、
+ * lunch=午休、post=盘后、closed=休市。客户端据此把盘前/竞价/盘后单独着色，
+ * 避免「一根柱子既含竞价又含连续竞价」造成涨跌幅对不上盘口。
+ */
+export type BarSegment = 'pre' | 'auction' | 'continuous' | 'lunch' | 'post' | 'closed'
+
 export interface BarItem {
   time: number | string
   open: number
@@ -180,6 +193,7 @@ export interface BarItem {
   close: number
   volume: number
   amount: number
+  segment?: BarSegment
 }
 
 export interface MinutePoint {
@@ -187,6 +201,7 @@ export interface MinutePoint {
   price: number
   volume: number
   avg: number
+  segment?: BarSegment
 }
 
 /** 指数成分：列表里直接带报价，避免为了看涨跌幅再逐支请求 */

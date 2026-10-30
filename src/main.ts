@@ -6,8 +6,18 @@ import { useAuth } from './stores/auth'
 import { setUnauthorizedHandler, TOKEN_KEY } from './api/http'
 import { assertConfig, apiConfig, serverLabel } from './config'
 
+// zebra-swiper 是 uni-app 生态组件，会摸 window.uni 上的几个方法。
+// 必须在任何引用到它的组件被求值之前装好垫片，所以这两行放在最前面，
+// 且要早于 App.vue / router 的组件树挂载（import 顺序即执行顺序）。
+import { installUniShim } from './shims/uni'
+
+installUniShim()
+
 import './styles/global.css'
 import './styles/immersive.css'
+// zebra-swiper 的样式是 scss，且模板用小程序标签，需要配套的标签样式补齐
+import '@zebra-ui/swiper/index.scss'
+import './styles/zebra-compat.css'
 
 /**
  * 兜底错误界面。

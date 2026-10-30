@@ -38,20 +38,39 @@ const floatingPnl = computed(() =>
   positions.value.reduce((s, p) => s + (p.unrealized_pnl ?? 0), 0),
 )
 
+/**
+ * 分别拉取概览与持仓，互不连坐。
+ *
+ * 之前用 Promise.all：只要其中一个接口报错（本轮修掉的那个持仓 500 就是典型），
+ * 整页只剩一句「服务器内部错误」，连本来正常的资产卡片都看不到。
+ * 现在两路各取所需，谁失败就只在那块区域给提示，另一块照常显示。
+ */
 async function refresh() {
   if (!auth.state.user) return
   loading.value = true
-  try {
-    const [s, p] = await Promise.all([accountApi.summary(), accountApi.positions()])
-    summary.value = s
-    positions.value = p.items
-    updatedAt.value = Date.now()
-    error.value = ''
-  } catch (e: any) {
-    error.value = e?.message ?? '加载失败'
-  } finally {
-    loading.value = false
+  const [s, p] = await Promise.allSettled([accountApi.summary(), accountApi.positions()])
+
+  if (s.status === 'fulfilled') {
+    summary.value = s.value
+  } else {
+    summary.value = null
   }
+  if (p.status === 'fulfilled') {
+    positions.value = p.value.items ?? []
+  } else {
+    positions.value = []
+  }
+
+  const failed = [s, p].filter((r) => r.status === 'rejected') as PromiseRejectedResult[]
+  if (failed.length) {
+    // 只报第一层的可读原因，不去展开 axios/alova 的完整错误对象
+    const reason = failed[0].reason
+    error.value = reason?.message ?? '加载失败，请稍后重试'
+  } else {
+    error.value = ''
+    updatedAt.value = Date.now()
+  }
+  loading.value = false
 }
 
 // 未登录时接口必然 401，这里直接跳过，避免无意义的错误提示

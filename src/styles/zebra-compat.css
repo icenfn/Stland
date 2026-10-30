@@ -1,0 +1,31 @@
+/* ==========================================================================
+   zebra-swiper 标签兼容层
+   @zebra-ui/swiper 源自 uni-app，模板里用 <view> / <text> / <image> 这些小程序标签。
+   浏览器不认识它们，会按 HTML 未知元素处理（display 默认 inline），
+   于是滑轨宽度量出来是 auto、每屏高度塌成 0，表现为「滑动区域一片空白」。
+   这里只做标签语义补齐，不覆盖组件自身的 .swiper / .swiper-wrapper 布局规则。
+   ========================================================================== */
+
+view,
+scroll-view,
+swiper,
+swiper-item,
+movable-area,
+movable-view {
+  display: block;
+  box-sizing: border-box;
+}
+
+text {
+  display: inline;
+}
+
+image {
+  display: inline-block;
+  overflow: hidden;
+}
+
+/* 组件内部的隐藏计数节点（<view style="display:none">）不应占位 */
+.swiper view[style*='display: none'] {
+  display: none !important;
+}
