@@ -31,7 +31,7 @@ const props = withDefaults(
     minutes?: Point[]
     bars?: Bar[]
     mode?: 'minute' | 'kline'
-    /** 副图类型：volume 成交量、macd MACD、ratio 量比 */
+    /** 副图类型：none 不显示、volume 成交量、macd MACD */
     sub?: 'none' | 'volume' | 'macd' | 'ratio'
     prevClose?: number
     height?: number
@@ -270,16 +270,14 @@ function drawMacd(ctx: CanvasRenderingContext2D, w: number, h: number) {
 /**
  * 副图：量比。
  *
- * 量比口径：这一根的量 ÷ 全区间每根的平均量，基准线 1.0。
- * 为什么用「相对本区间均量」而不是「过去 5 日每分钟均量」：
- * 客户端手上只有当前这一屏的序列，没有 5 日历史分钟量；
- * 而量比要回答的问题本来就是「此刻的量相比常态是放大还是萎缩」，
- * 以本区间均量为基准同样能看出放量/缩量，且不会因为换周期就失真。
- * 服务端另外下发的 `volume_ratio` 是全市场口径，用于指标网格展示数值。
+ * 口径：这一根的量 ÷ 本区间每根的平均量，基准线 1.0。
+ * 为什么以「本区间均量」为基准：客户端手上只有当前这一屏的序列，没有过去 5 日
+ * 每分钟均量；而量比要回答的本来就是「此刻的量相对常态是放大还是萎缩」，
+ * 用本区间均量同样能看出放量/缩量，且换周期不会失真。
+ * 服务端另下发的 volume_ratio 是用于指标网格展示的全市场口径数值。
  */
 function drawRatio(ctx: CanvasRenderingContext2D, w: number, h: number) {
-  const isKline = props.mode === 'kline'
-  const vols = isKline
+  const vols = props.mode === 'kline'
     ? (props.bars ?? []).map((b) => b.volume || 0)
     : (props.minutes ?? []).map((p) => p.volume || 0)
   const n = vols.length
@@ -289,10 +287,10 @@ function drawRatio(ctx: CanvasRenderingContext2D, w: number, h: number) {
 
   const ratios = vols.map((v) => v / mean)
   const top = Math.max(...ratios, 1.15)
-  const yOf = (r: number) => h - 1 - (r / top) * (h - 2)
+  const yOf = (r: number) => h - 2 - (r / top) * (h - 4)
   const xOf = (i: number) => (i / Math.max(1, n - 1)) * w
 
-  // 基准线 1.0：量比高于它即放量
+  // 基准线 1.0：高于它是放量，低于它是缩量
   ctx.strokeStyle = 'rgba(255,255,255,0.22)'
   ctx.setLineDash([4, 3])
   ctx.lineWidth = 1
@@ -302,22 +300,20 @@ function drawRatio(ctx: CanvasRenderingContext2D, w: number, h: number) {
   ctx.stroke()
   ctx.setLineDash([])
 
-  // 量比折线：高于基准用暖色、低于用冷色，方便一眼分辨
   const last = ratios[n - 1]
   ctx.beginPath()
   ratios.forEach((r, i) => {
     const x = xOf(i)
     const y = yOf(r)
-    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)
+    if (i === 0) ctx.moveTo(x, y)
+    else ctx.lineTo(x, y)
   })
   ctx.strokeStyle = last >= 1 ? '#e8b339' : '#7aa9ff'
   ctx.lineWidth = 1.2
   ctx.stroke()
 
-  const lx = xOf(n - 1)
-  const ly = yOf(last)
   ctx.beginPath()
-  ctx.arc(lx, ly, 2.2, 0, Math.PI * 2)
+  ctx.arc(xOf(n - 1), yOf(last), 2.2, 0, Math.PI * 2)
   ctx.fillStyle = last >= 1 ? '#e8b339' : '#7aa9ff'
   ctx.fill()
 }

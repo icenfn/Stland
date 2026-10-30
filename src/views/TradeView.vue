@@ -1,511 +1,435 @@
 <script setup lang="ts">
 /**
- * 交易页：由原「资产」与「我的」合并而来。
+ * 交易页：原「资产」与「我的」合并。
  *
- * 为什么要合并：这两页本来就在互相引用 —— 资产页要显示持仓浮盈，我的页要显示总资产，
- * 用户为了看「我这账号现在什么情况」需要在两个页面来回跳。拆成两页只是把一件事分两处看。
- * 合并后一页给完整答案：总资产 → 今日与浮动盈亏 → 持仓明细 → 委托与成交 → 账户与设置。
+ * 为什么合并：
+ *  · 两个页面里一大半内容是重复的 —— 都在展示账户身份、持仓入口、委托入口，
+ *    用户想看「我的钱」还得先判断该点底栏哪个格子；
+ *  · 交易这件事本来就是一体的：账户 → 资产 → 持仓 → 委托，
+ *    拆成两页后「我刚下的单成交了吗」要在两页之间来回跳。
  *
- * 同时按反馈删掉「累计已实现」：
- *  · 模拟盘里「已实现盈亏」必须靠成交记录反推，而分红、送股、费用调整都会让它失真；
- *    一个算不准的数字放在总资产旁边，比不显示更糟 —— 用户会拿它当账户表现的结论。
- *  · 真正每天要看的是「今天赚了多少」（当日盈亏）和「手上的仓现在赚多少」（浮动盈亏），
- *    这两个都能用当前持仓直接算准，所以本轮把它们提到最显眼的位置。
+ * 结构：自上而下按「我在哪 → 我有多少钱 → 我怎么走的」排
+ *   1. 账户条（身份 + 风险等级 + 退出）
+ *   2. 资产卡（总资产 / 当日盈亏 / 浮动盈亏 / 可用·冻结·市值）
+ *   3. 风险偏好（与资金属性同屏）
+ *   4. 持仓列表
+ *   5. 快捷入口（委托与成交 / 机构交易台）
+ *   6. 页脚声明
+ *
+ * 两处数据口径修正：
+ *  · 「累计已实现」删除 —— 模拟盘里这个数字由成交反推，既不准也没有产品意义，
+ *    换成「浮动盈亏」（持仓未兑现部分），是用户真正关心的、服务端能精确结算的量；
+ *  · 金额仍走千分位纯数字（fmtMoney），不做「万/亿」压缩 —— 金额是精确量，不是观测量。
  */
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useIntervalFn } from '@vueuse/core'
-import { accountApi, tradeApi } from '@/api'
-import type { AccountSummary, OrderItem, PositionItem } from '@/api/types'
+import { accountApi } from '@/api'
+import type { AccountSummary, PositionItem } from '@/api/types'
 import AppBar from '@/components/AppBar.vue'
-import { fmtAmount, fmtMoney, fmtPct, fmtPrice, trendClass } from '@/utils/format'
+import { useAuth } from '@/stores/auth'
+import { fmtAgo, fmtDateTime, fmtMoney, fmtPct, fmtPrice, fmtSignedMoney, trendClass } from '@/utils/format'
+import { levelLabel, levelTone, useRisk } from '@/stores/risk'
 
 const router = useRouter()
+const auth = useAuth()
+const risk = useRisk()
 
 const summary = ref<AccountSummary | null>(null)
 const positions = ref<PositionItem[]>([])
-const orders = ref<OrderItem[]>([])
-const loading = ref(true)
 const error = ref('')
-const tab = ref<'position' | 'order'>('position')
+const updatedAt = ref(0)
 
-const asset = computed(() => summary.value?.asset ?? null)
+const asset = computed(() => summary.value?.asset)
+const user = computed(() => auth.state.user)
 
-const totalFloating = computed(() =>
-  positions.value.reduce((s, p) => s + (p.unrealized_pnl || 0), 0),
-)
-
-/** 持仓成本合计，用于算浮动盈亏百分比（接口已给则优先用接口口径） */
-const floatingPct = computed(() => {
-  const a = asset.value
-  if (a?.floating_pct != null) return a.floating_pct
-  const cost = positions.value.reduce((s, p) => s + p.avg_cost * p.quantity, 0)
-  return cost > 0 ? (totalFloating.value / cost) * 100 : 0
+const roleLabel = computed(() => {
+  // 交易账户只有零售与机构；管理员是服务端独立表，不会出现在客户端身份里
+  const map: Record<string, string> = { retail: '零售', institution: '机构' }
+  return map[user.value?.role ?? 'retail'] ?? ''
 })
 
-const pendingOrders = computed(() =>
-  orders.value.filter((o) => o.status === 'pending' || o.status === 'partial'),
+/**
+ * 浮动盈亏 = 持仓市值 - 持仓成本合计。
+ * 直接由 positions 汇总，而不是取 asset 里的字段 —— 持仓列表已经拿到了明细，
+ * 汇总出来与逐行看到的数字天然一致，不会出现「卡片说赚、列表说亏」。
+ */
+const floatingPnl = computed(() =>
+  positions.value.reduce((s, p) => s + (p.unrealized_pnl ?? 0), 0),
 )
 
-function statusText(o: OrderItem) {
-  switch (o.status) {
-    case 'filled':
-      return '已成交'
-    case 'partial':
-      return '部分成交'
-    case 'pending':
-      return '待成交'
-    case 'cancelled':
-      return '已撤单'
-    case 'rejected':
-      return '已拒绝'
-    default:
-      return o.status
-  }
-}
-
-function fmtTime(ts: number) {
-  if (!ts) return ''
-  const d = new Date(ts * 1000)
-  const p = (n: number) => String(n).padStart(2, '0')
-  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
-}
-
-async function load() {
+async function refresh() {
   try {
-    const [s, p, o] = await Promise.all([
-      accountApi.summary(),
-      accountApi.positions(),
-      tradeApi.orders(),
-    ])
+    const [s, p] = await Promise.all([accountApi.summary(), accountApi.positions()])
     summary.value = s
     positions.value = p.items
-    orders.value = o.items
+    updatedAt.value = Date.now()
     error.value = ''
   } catch (e: any) {
     error.value = e?.message ?? '加载失败'
-  } finally {
-    loading.value = false
   }
 }
 
-async function cancel(o: OrderItem) {
-  try {
-    await tradeApi.cancel(o.id)
-    await load()
-  } catch (e: any) {
-    error.value = e?.message ?? '撤单失败'
-  }
-}
+// 已登录才轮询；未登录时这里是空壳（页面本身不应该把未登录用户挡在门外）
+useIntervalFn(() => {
+  if (auth.state.user) void refresh()
+}, 4000)
 
-const { pause, resume } = useIntervalFn(
-  () => {
-    if (document.visibilityState === 'visible') void load()
-  },
-  5000,
-  { immediate: false },
-)
+async function doLogout() {
+  await auth.logout()
+  await router.replace('/login')
+}
 
 onMounted(async () => {
-  await load()
-  resume()
+  if (!auth.state.user) return
+  await Promise.all([refresh(), risk.refresh()])
 })
-onBeforeUnmount(pause)
 </script>
 
 <template>
-  <div class="page trade-page">
-    <AppBar title="交易" />
+  <div class="page">
+    <AppBar title="交易">
+      <template #actions>
+        <span v-if="updatedAt" class="upd-tag">{{ fmtAgo(updatedAt) }}</span>
+        <button class="mini-btn" @click="router.push('/orders')">流水</button>
+      </template>
+    </AppBar>
 
-    <div v-if="error" class="empty">{{ error }}</div>
-    <div v-else-if="loading" class="empty">加载中…</div>
-
-    <template v-else-if="asset">
-      <!-- 总资产 -->
-      <section class="hero">
-        <div class="hero-label">总资产（元）</div>
-        <div class="hero-value tabular">{{ fmtMoney(asset.total_asset) }}</div>
-        <div class="hero-sub">
-          <span>可用 {{ fmtMoney(asset.cash) }}</span>
-          <span v-if="asset.frozen_cash > 0" class="frozen">冻结 {{ fmtMoney(asset.frozen_cash) }}</span>
-          <span>市值 {{ fmtMoney(asset.market_value) }}</span>
-        </div>
-      </section>
-
-      <!-- 今日 / 浮动：这两个才是每天要看的数字 -->
-      <section class="pnl-cards">
-        <div class="pnl">
-          <span class="pk">当日盈亏</span>
-          <span class="pv tabular" :class="trendClass(asset.day_pnl)">{{ fmtMoney(asset.day_pnl) }}</span>
-        </div>
-        <div class="pnl">
-          <span class="pk">浮动盈亏</span>
-          <span class="pv tabular" :class="trendClass(asset.floating_pnl ?? totalFloating)">
-            {{ fmtMoney(asset.floating_pnl ?? totalFloating) }}
-          </span>
-          <span class="pp tabular" :class="trendClass(floatingPct)">{{ fmtPct(floatingPct) }}</span>
-        </div>
-      </section>
-
-      <!-- 切换：持仓 / 委托 -->
-      <div class="seg">
-        <button class="seg-btn" :class="{ on: tab === 'position' }" @click="tab = 'position'">
-          持仓 <em>{{ positions.length }}</em>
-        </button>
-        <button class="seg-btn" :class="{ on: tab === 'order' }" @click="tab = 'order'">
-          委托 <em>{{ pendingOrders.length }}</em>
-        </button>
+    <!-- 未登录：给一个明确的登录入口，而不是空白或直接踢走 -->
+    <section v-if="!auth.state.user" class="px sect">
+      <div class="card guest">
+        <div class="guest-t">登录后查看资产与持仓</div>
+        <p class="text-xs hint">行情与个股不需要登录即可浏览。</p>
+        <button class="btn btn-primary btn-block" @click="router.push('/login')">去登录</button>
       </div>
+    </section>
 
-      <!-- 持仓 -->
-      <section v-if="tab === 'position'">
-        <div v-if="!positions.length" class="empty-box">
-          <div class="etitle">还没有持仓</div>
-          <p class="text-xs">在行情里挑一只，从详情页底栏买入。</p>
-          <button class="btn btn-ghost" @click="router.push('/')">去看行情</button>
-        </div>
-        <div v-else class="plist">
-          <div v-for="p in positions" :key="p.code" class="prow" @click="router.push(`/stock/${p.code}`)">
-            <div class="pname">
-              <div class="pn">{{ p.name }}</div>
-              <div class="pc">{{ p.code }} · 成本 {{ fmtPrice(p.avg_cost) }}</div>
-            </div>
-            <div class="pnum">
-              <div class="pq tabular">{{ p.quantity }}<em>股</em></div>
-              <div class="pa text-xs">可用 {{ p.available }}</div>
-            </div>
-            <div class="ppnl">
-              <div class="pv tabular" :class="trendClass(p.unrealized_pnl)">{{ fmtMoney(p.unrealized_pnl) }}</div>
-              <div class="pp tabular" :class="trendClass(p.unrealized_pct)">{{ fmtPct(p.unrealized_pct) }}</div>
-            </div>
+    <template v-else>
+      <!-- 1. 账户条 -->
+      <section class="px sect">
+        <div class="card profile-card">
+          <div class="avatar">{{ (user?.display_name ?? 'U').slice(0, 1) }}</div>
+          <div class="grow">
+            <div class="pname">{{ user?.display_name ?? user?.username }}</div>
+            <div class="pmeta">{{ user?.username }} · {{ roleLabel }}账户</div>
           </div>
+          <button class="mini-btn" @click="doLogout">退出</button>
         </div>
       </section>
 
-      <!-- 委托 -->
-      <section v-else>
-        <div v-if="!orders.length" class="empty-box">
-          <div class="etitle">还没有委托</div>
-          <p class="text-xs">下单后这里会显示委托状态与成交进度。</p>
-        </div>
-        <div v-else class="olist">
-          <div v-for="o in orders" :key="o.id" class="orow">
-            <div class="oleft">
-              <span class="oside" :class="o.side">{{ o.side === 'buy' ? '买' : '卖' }}</span>
-              <div class="oname">
-                <div class="on">{{ o.code }}</div>
-                <div class="ot">{{ fmtTime(o.created_at) }} · {{ o.order_type === 'limit' ? '限价委托' : '市价委托' }}</div>
+      <!-- 2. 资产卡：纯数字，不带单位 -->
+      <section class="px">
+        <div class="card asset-card">
+          <div class="label">总资产</div>
+          <div class="total tabular">{{ fmtMoney(asset?.total_asset ?? 0) }}</div>
+          <div class="pnl-row">
+            <div class="pnl">
+              <div class="text-xs">当日盈亏</div>
+              <div class="tabular pnl-v" :class="trendClass(asset?.day_pnl ?? 0)">
+                {{ fmtSignedMoney(asset?.day_pnl ?? 0) }}
               </div>
             </div>
-            <div class="omid">
-              <div class="op tabular">{{ o.order_type === 'limit' ? fmtPrice(o.price) : '市价' }}</div>
-              <div class="oq text-xs">{{ o.filled_quantity }}/{{ o.quantity }}</div>
+            <div class="pnl">
+              <div class="text-xs">浮动盈亏</div>
+              <div class="tabular pnl-v" :class="trendClass(floatingPnl)">
+                {{ fmtSignedMoney(floatingPnl) }}
+              </div>
             </div>
-            <div class="oright">
-              <span class="ostat" :class="o.status">{{ statusText(o) }}</span>
-              <button
-                v-if="o.status === 'pending' || o.status === 'partial'"
-                class="ocancel"
-                @click="cancel(o)"
-              >
-                撤单
-              </button>
+          </div>
+
+          <div class="asset-grid">
+            <div class="ag-item">
+              <span class="k">可用资金</span>
+              <span class="v tabular">{{ fmtMoney(asset?.cash ?? 0) }}</span>
+            </div>
+            <div class="ag-item">
+              <span class="k">冻结资金</span>
+              <span class="v tabular">{{ fmtMoney(asset?.frozen_cash ?? 0) }}</span>
+            </div>
+            <div class="ag-item">
+              <span class="k">持仓市值</span>
+              <span class="v tabular">{{ fmtMoney(asset?.market_value ?? 0) }}</span>
             </div>
           </div>
         </div>
       </section>
 
-      <!-- 账户 -->
-      <section class="account">
-        <div class="arow">
-          <span class="ak">账户</span>
-          <span class="av">{{ summary?.user.display_name || summary?.user.username }}</span>
+      <!-- 3. 风险偏好：未测评不显示等级，只给测评入口 -->
+      <section class="px">
+        <div class="card">
+          <div class="row-between">
+            <span class="card-h" style="margin: 0">风险偏好</span>
+            <span class="text-xs">{{ risk.assessed.value ? '已测评' : '未评估' }}</span>
+          </div>
+
+          <template v-if="risk.assessed.value">
+            <div class="risk-show">
+              <span class="risk-level" :style="{ color: levelTone(risk.level.value) }">
+                {{ levelLabel(risk.level.value) }}
+              </span>
+              <span class="text-xs tabular">{{ fmtDateTime(risk.assessedAt.value) }}</span>
+            </div>
+            <p class="text-xs hint">风险偏好用于匹配你可承受的仓位波动。</p>
+          </template>
+          <p v-else class="text-xs hint">尚未完成风险测评，因此不显示风险偏好。</p>
+
+          <button class="btn btn-ghost btn-block risk-btn" @click="router.push('/risk')">
+            {{ risk.assessed.value ? '重新测评' : '开始风险测评' }}
+          </button>
         </div>
-        <div class="arow">
-          <span class="ak">风险等级</span>
-          <span class="av">R{{ summary?.risk.level ?? '—' }}</span>
-        </div>
-        <div class="arow">
-          <span class="ak">累计费用</span>
-          <span class="av tabular">{{ fmtAmount(asset.fee_paid) }}</span>
-        </div>
-        <button class="arow link" @click="router.push('/risk')">
-          <span class="ak">风险偏好测评</span>
-          <span class="av">›</span>
-        </button>
-        <button class="arow link" @click="router.push('/orders')">
-          <span class="ak">全部委托与成交</span>
-          <span class="av">›</span>
-        </button>
       </section>
+
+      <!-- 4. 持仓 -->
+      <section class="holdings">
+        <div class="hold-head">
+          <span class="card-h" style="margin: 0">持仓 {{ positions.length }}</span>
+          <span class="text-xs">点击查看详情</span>
+        </div>
+
+        <div v-if="error" class="empty">{{ error }}</div>
+        <div v-else-if="!positions.length" class="empty">暂无持仓，去首页行情面板挑一支买入吧</div>
+
+        <div v-for="p in positions" :key="p.code" class="hold-row" @click="router.push(`/stock/${p.code}`)">
+          <div class="hl">
+            <div class="hname">{{ p.name }}</div>
+            <div class="hsub">
+              <span>{{ p.code }}</span>
+              <span>持仓 {{ p.quantity }}</span>
+              <span>可卖 {{ p.available }}</span>
+            </div>
+            <div class="htime">
+              成本 {{ fmtPrice(p.avg_cost, 4) }} · 更新 {{ p.updated_at ? fmtDateTime(p.updated_at) : '实时' }}
+            </div>
+          </div>
+          <div class="hm">
+            <div class="tabular hmv" :class="trendClass(p.unrealized_pnl)">{{ fmtMoney(p.market_value) }}</div>
+            <div class="text-xs tabular" :class="trendClass(p.unrealized_pnl)">{{ fmtPct(p.unrealized_pct) }}</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 5. 快捷入口 -->
+      <section class="px">
+        <div class="card menu">
+          <button class="menu-item" @click="router.push('/orders')">
+            <span>委托与成交</span><span class="arrow">›</span>
+          </button>
+          <button v-if="auth.isInstitution.value" class="menu-item" @click="router.push('/institution')">
+            <span>机构交易台</span><span class="arrow">›</span>
+          </button>
+        </div>
+      </section>
+
+      <p class="disclaimer px">
+        资产与盈亏由服务端账务引擎结算（现金 / 冻结 / 市值三账分离）。
+      </p>
+      <p class="foot">Stland 股岛 1.0.0 · 账户与标的由服务端后台管理</p>
     </template>
   </div>
 </template>
 
 <style scoped>
-.trade-page {
-  padding-bottom: calc(var(--h-tabbar) + var(--safe-bottom) + 12px);
+.sect {
+  padding-top: 10px;
 }
-
-.hero {
-  padding: 14px 16px 16px;
-  background: linear-gradient(160deg, rgba(232, 56, 61, 0.16), transparent 70%);
-}
-.hero-label {
+.mini-btn {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--c-line);
+  border-radius: 8px;
+  color: var(--c-text-2);
   font-size: 11px;
-  color: var(--c-text-3);
+  padding: 5px 10px;
+  cursor: pointer;
 }
-.hero-value {
+.upd-tag {
+  font-size: 10px;
+  color: var(--c-text-3);
+  margin-right: 2px;
+}
+.guest {
+  text-align: center;
+}
+.guest-t {
+  font-size: 15px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+.guest .hint {
+  margin: 0 0 14px;
+}
+.asset-card {
+  background: linear-gradient(150deg, #22303f, #161f2a);
+}
+.label {
+  font-size: 11px;
+  color: var(--c-text-2);
+}
+.total {
   font-size: 30px;
-  font-weight: 800;
-  letter-spacing: -0.6px;
-  margin-top: 4px;
-  line-height: 1.15;
+  font-weight: 700;
+  margin: 4px 0 2px;
+  letter-spacing: -0.5px;
 }
-.hero-sub {
+.pnl-row {
   display: flex;
-  gap: 14px;
-  margin-top: 8px;
-  font-size: 11px;
-  color: var(--c-text-3);
-  flex-wrap: wrap;
+  gap: 18px;
+  margin-top: 6px;
 }
-.hero-sub .frozen {
-  color: #e8b339;
+.pnl-v {
+  font-weight: 600;
+  font-size: 13px;
 }
-
-.pnl-cards {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 1px;
-  background: var(--c-line);
+.asset-grid {
+  display: flex;
+  gap: 8px;
+  margin-top: 14px;
+  padding-top: 12px;
   border-top: 1px solid var(--c-line);
-  border-bottom: 1px solid var(--c-line);
 }
-.pnl {
-  background: var(--c-card);
-  padding: 11px 14px;
+.ag-item {
+  flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 3px;
+  min-width: 0;
 }
-.pk {
+.ag-item .k {
   font-size: 10px;
   color: var(--c-text-3);
 }
-.pv {
+.ag-item .v {
+  font-size: 12px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.card-h {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+.hint {
+  margin: 8px 0 0;
+  line-height: 1.65;
+}
+.risk-show {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 10px 12px;
+  background: var(--c-bg-elevated);
+  border-radius: 10px;
+}
+.risk-level {
   font-size: 17px;
   font-weight: 700;
 }
-.pp {
-  font-size: 11px;
-}
-
-.seg {
-  display: flex;
-  gap: 6px;
-  padding: 10px 14px 6px;
-}
-.seg-btn {
-  flex: 1;
-  background: var(--c-card);
-  border: 1px solid var(--c-line);
-  border-radius: 9px;
-  color: var(--c-text-2);
+.risk-btn {
+  margin-top: 12px;
   font-size: 13px;
-  padding: 8px 0;
-  cursor: pointer;
+  padding: 10px 16px;
 }
-.seg-btn em {
-  font-style: normal;
-  font-size: 11px;
-  color: var(--c-text-3);
-  margin-left: 3px;
-}
-.seg-btn.on {
-  border-color: rgba(232, 56, 61, 0.45);
-  color: #ff8b8d;
-  background: rgba(232, 56, 61, 0.12);
-  font-weight: 600;
-}
-
-.plist,
-.olist {
-  margin-top: 4px;
-}
-.prow {
+.profile-card {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 11px 14px;
-  border-top: 1px solid var(--c-line);
-  background: var(--c-card);
-  cursor: pointer;
+  gap: 12px;
 }
-.pname {
-  flex: 1;
-  min-width: 0;
-}
-.pn {
-  font-size: 14px;
-  font-weight: 600;
-}
-.pc {
-  font-size: 10px;
-  color: var(--c-text-3);
-  margin-top: 2px;
-}
-.pnum {
-  flex: 0 0 64px;
-  text-align: right;
-}
-.pq {
-  font-size: 13px;
-  font-weight: 600;
-}
-.pq em {
-  font-style: normal;
-  font-size: 10px;
-  color: var(--c-text-3);
-  margin-left: 1px;
-}
-.ppnl {
-  flex: 0 0 88px;
-  text-align: right;
-}
-.ppnl .pv {
-  font-size: 14px;
-}
-.ppnl .pp {
-  font-size: 11px;
-  margin-top: 1px;
-}
-
-.orow {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 14px;
-  border-top: 1px solid var(--c-line);
-  background: var(--c-card);
-}
-.oleft {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-.oside {
-  flex: 0 0 auto;
-  width: 20px;
-  height: 20px;
-  border-radius: 5px;
+.avatar {
+  width: 46px;
+  height: 46px;
+  border-radius: 15px;
+  background: linear-gradient(135deg, #ff6b6d, #d92b2f);
   display: grid;
   place-items: center;
-  font-size: 11px;
+  font-size: 20px;
   font-weight: 700;
   color: #fff;
 }
-.oside.buy {
-  background: var(--c-up);
+.pname {
+  font-size: 16px;
+  font-weight: 700;
 }
-.oside.sell {
-  background: var(--c-down);
+.pmeta {
+  font-size: 11px;
+  color: var(--c-text-3);
+  margin-top: 2px;
 }
-.on {
-  font-size: 13px;
+.holdings {
+  margin-top: 12px;
+}
+.hold-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0 14px 8px;
+}
+.hold-row {
+  display: flex;
+  align-items: center;
+  padding: 12px 14px;
+  border-top: 1px solid var(--c-line);
+  background: var(--c-card);
+  cursor: pointer;
+}
+.hl {
+  flex: 1;
+  min-width: 0;
+}
+.hname {
+  font-size: 15px;
   font-weight: 600;
 }
-.ot {
+.hsub {
+  display: flex;
+  gap: 8px;
+  font-size: 10px;
+  color: var(--c-text-3);
+  margin-top: 3px;
+}
+.htime {
   font-size: 10px;
   color: var(--c-text-3);
   margin-top: 2px;
 }
-.omid {
-  flex: 0 0 66px;
+.hm {
   text-align: right;
 }
-.op {
-  font-size: 12px;
+.hmv {
   font-weight: 600;
 }
-.oq {
-  font-size: 10px;
-  color: var(--c-text-3);
+.menu {
+  padding: 0;
+  overflow: hidden;
 }
-.oright {
-  flex: 0 0 58px;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 4px;
-}
-.ostat {
-  font-size: 11px;
-  color: var(--c-text-2);
-}
-.ostat.pending {
-  color: #e8b339;
-}
-.ostat.filled {
-  color: var(--c-text-3);
-}
-.ocancel {
-  background: none;
-  border: 1px solid var(--c-line-strong);
-  border-radius: 6px;
-  color: var(--c-text-2);
-  font-size: 10px;
-  padding: 3px 7px;
-  cursor: pointer;
-}
-
-.account {
-  margin-top: 10px;
-  border-top: 1px solid var(--c-line);
-  background: var(--c-card);
-}
-.arow {
+.menu-item {
   width: 100%;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 12px 14px;
-  border-bottom: 1px solid var(--c-line);
   background: none;
+  border: none;
+  border-bottom: 1px solid var(--c-line);
   color: var(--c-text);
-  font-size: 13px;
-}
-.arow:last-child {
-  border-bottom: none;
-}
-.arow.link {
+  font-size: 14px;
+  padding: 14px;
   cursor: pointer;
 }
-.ak {
-  color: var(--c-text-2);
+.menu-item:last-child {
+  border-bottom: none;
 }
-.av {
+.arrow {
   color: var(--c-text-3);
-  font-size: 12px;
 }
-
-.empty-box {
-  margin: 30px 24px;
+.disclaimer {
+  font-size: 10px;
+  color: var(--c-text-3);
+  padding: 14px;
+  line-height: 1.6;
+}
+.foot {
+  font-size: 10px;
+  color: var(--c-text-3);
   text-align: center;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-}
-.etitle {
-  font-size: 14px;
-  font-weight: 600;
-}
-.empty-box .btn {
-  margin-top: 4px;
-  font-size: 13px;
-  padding: 9px 18px;
+  margin: 4px 0 8px;
 }
 </style>

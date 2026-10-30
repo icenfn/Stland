@@ -2,24 +2,37 @@
 /**
  * 下单底部抽屉。
  *
- * 本轮取向（按反馈调整）：
- *  · 抽屉里不再放「买入 / 卖出」切换 —— 买卖方向由用户在详情页按下哪个按钮决定，
- *    进抽屉后再切一次是重复输入，而且容易和底部按钮的颜色暗示打架。
- *    抽屉只呈现「我正在买 X」或「我正在卖 X」这一个确定事实。
- *  · 「限价 / 市价」改成「限价委托 / 市价委托」——「限价」两个字单独摆着看不出是
- *    委托方式还是价格输入方式，加上「委托」后缀语义才完整。
- *  · 显示可买（可卖）股数：用户下单前第一个要问的就是「我这笔钱能买多少」，
- *    让他自己拿现金除以价格口算是这个页面最不该省掉的一步。
- *  · 价格与数量都可用 ＋/－ 调整：手机键盘输数字既慢又容易点错，
- *    步进按钮才是移动端调参的主要方式，输入框用于精确覆盖。
+ * 本版四处调整：
  *
- * 返回键语义：抽屉打开时按系统返回键，应当「关闭抽屉」而不是「退出当前页面」。
- * 实现方式是在打开时往历史栈压一个同地址的哨兵状态，并在 popstate 时拦下。
+ * 1) 去掉「买入 / 卖出」切换。
+ *    抽屉是从明确的入口打开的 —— 详情页的「买入」「卖出」按钮各自对应一种意图，
+ *    打开后再让用户切一次，等于让他重复确认刚点过的按钮；也更危险：
+ *    切着切着把「卖出」当「买入」提交。方向由调用方传入，抽屉只显示当前方向。
+ *
+ * 2) 委托方式改为「限价委托 / 市价委托」。
+ *    原来只写「限价 / 市价」，对新手是黑话；这两者真正的差别是「要不要指定价格」，
+ *    所以价格输入框在市价下直接置灰并写明「按市价成交」。
+ *
+ * 3) 增加「可买 / 可卖」股数。
+ *    原来只显示「可成交」，那是撮合视角（能不能成交），不是用户视角（我买得起多少）。
+ *    现在按「可用资金 ÷ 价格」算可买、按持仓可用算可卖，并提供「全部」一键填入，
+ *    省掉用户心算。
+ *
+ * 4) 价格与数量都带 ＋/－ 步进。
+ *    价格按最小变动价位跳，数量按一手跳，避免手输 100 手输成 100 股。
+ *
+ * 间距一律使用像素与真实存在的变量（--c-* / --r-* / --safe-bottom）。
+ * 早前这一层用了 --sp-2/--sp-3/--sp-4，而样式表里从来没有这些变量，
+ * 导致 padding、margin 全部失效，抽屉内容挤成一坨。
+ *
+ * 返回键语义保持不变：抽屉打开时按系统返回键只关闭抽屉，不退出当前页面。
  */
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { accountApi, marketApi, tradeApi } from '@/api'
 import type { Quote, StockMeta, TradePreview } from '@/api/types'
-import { fmtAmount, fmtMoney, fmtPrice } from '@/utils/format'
+import { useAuth } from '@/stores/auth'
+import { fmtAmount, fmtPrice } from '@/utils/format'
 
 const props = withDefaults(
   defineProps<{
@@ -35,6 +48,9 @@ const emit = defineEmits<{
   (e: 'submitted', payload: { code: string; side: 'buy' | 'sell' }): void
 }>()
 
+const router = useRouter()
+const auth = useAuth()
+
 const code = ref('')
 const side = ref<'buy' | 'sell'>('buy')
 const price = ref('')
@@ -43,35 +59,34 @@ const orderType = ref<'limit' | 'market'>('limit')
 const quote = ref<Quote | null>(null)
 const meta = ref<StockMeta | null>(null)
 const preview = ref<TradePreview | null>(null)
-/** 卖出方向的可卖股数：预览接口只给「可买」，卖出要自己查持仓 */
-const sellable = ref<number | null>(null)
 const message = ref('')
 const messageType = ref<'ok' | 'err'>('ok')
 const submitting = ref(false)
 
+/** 账户可用资金（买方向算可买） */
+const cash = ref(0)
+/** 该标的可卖数量（卖方向算可卖） */
+const sellable = ref(0)
+/** 账户信息是否已拿到，用于区分「可买 0 股」和「还没查到」 */
+const capacityReady = ref(false)
+
 const lot = computed(() => meta.value?.lot_size ?? 100)
-const isBuy = computed(() => side.value === 'buy')
-const sideLabel = computed(() => (isBuy.value ? '买入' : '卖出'))
-const tick = computed(() => meta.value?.tick_size ?? 0.01)
+const loggedIn = computed(() => !!auth.state.user)
 
-const quickQty = computed(() => {
-  // 快捷比例：整仓、半仓、三分之一仓，比固定的 100/200/500 股更贴合真实下单习惯
-  const max = maxQuantity.value
-  if (!max) return [1, 2, 3, 5, 10].map((n) => n * lot.value)
-  const out = [max, Math.floor(max / 2 / lot.value) * lot.value, Math.floor(max / 3 / lot.value) * lot.value]
-  return [...new Set(out.filter((n) => n > 0))].slice(0, 3)
+/** 计算可买/可卖用的价格：市价单用最新价估算 */
+const calcPrice = computed(() =>
+  orderType.value === 'limit' ? Number(price.value) || 0 : Number(quote.value?.price ?? 0),
+)
+
+const maxQty = computed(() => {
+  if (side.value === 'sell') return sellable.value
+  const p = calcPrice.value
+  if (!p || !lot.value) return 0
+  // 一手一手算，向下取整到整手，避免出现「可买 137 股」这种买不进去的数
+  return Math.floor(cash.value / (p * lot.value)) * lot.value
 })
 
-const estimateAmount = computed(() => {
-  const p = orderType.value === 'market' ? Number(quote.value?.price ?? 0) : Number(price.value || 0)
-  return p * Number(quantity.value || 0)
-})
-
-/** 可买（可卖）股数：买入看资金的整手上限，卖出看可用持仓 */
-const maxQuantity = computed(() => {
-  if (isBuy.value) return preview.value?.max_buy_quantity ?? 0
-  return sellable.value ?? 0
-})
+const estimateAmount = computed(() => Number(quote.value?.price ?? 0) * Number(quantity.value || 0))
 
 /** 是否已经压入了返回键哨兵状态 */
 let guardPushed = false
@@ -98,6 +113,7 @@ function onPopState() {
 /** 主动关闭：先把哨兵状态退掉，再通知父组件收起 */
 function close() {
   if (guardPushed) {
+    // 不先移除监听：由 history.back() 触发的 popstate 会负责关抽屉与解绑
     window.history.back()
     return
   }
@@ -115,22 +131,32 @@ async function loadSymbol() {
     message.value = e?.message ?? '标的不存在'
     messageType.value = 'err'
   }
-  if (!isBuy.value) await loadSellable()
 }
 
-async function loadSellable() {
+/** 取可用资金与可卖数量。失败不弹错 —— 这只是辅助信息，不该挡住下单 */
+async function loadCapacity() {
+  capacityReady.value = false
+  cash.value = 0
+  sellable.value = 0
+  if (!loggedIn.value || !code.value) {
+    capacityReady.value = true
+    return
+  }
   try {
-    const res = await accountApi.positions()
-    const p = res.items.find((x) => x.code === code.value)
-    sellable.value = p?.available ?? 0
+    const [s, p] = await Promise.all([accountApi.summary(), accountApi.positions()])
+    cash.value = s.asset?.cash ?? 0
+    const pos = p.items.find((x) => x.code === code.value)
+    sellable.value = pos?.available ?? 0
   } catch {
-    sellable.value = null
+    /* 未登录或接口异常时保持 0，界面显示「—」 */
+  } finally {
+    capacityReady.value = true
   }
 }
 
 async function refreshPreview() {
   const qty = Number(quantity.value)
-  if (!code.value || !qty) {
+  if (!code.value || !qty || !loggedIn.value) {
     preview.value = null
     return
   }
@@ -146,28 +172,21 @@ async function refreshPreview() {
   }
 }
 
-/** 价格步进：按最小变动价位调整，市价委托下不允许改价 */
 function stepPrice(delta: number) {
   if (orderType.value === 'market') return
-  const next = Math.max(tick.value, Number(price.value || 0) + delta * tick.value)
+  const tick = meta.value?.tick_size ?? 0.01
+  const next = Math.max(tick, Number(price.value || 0) + delta * tick)
   price.value = next.toFixed(2)
 }
 
-/** 数量步进：按整手增减，下限约束在 1 手，上限不超过可买（可卖） */
 function stepQty(delta: number) {
   const cur = Number(quantity.value || 0)
-  let next = cur + delta * lot.value
-  if (next < lot.value) next = lot.value
-  const cap = maxQuantity.value
-  if (cap > 0 && next > cap) next = Math.floor(cap / lot.value) * lot.value || lot.value
+  const next = Math.max(0, cur + delta * lot.value)
   quantity.value = String(next)
 }
 
-/** 一键填满可买（可卖）股数 */
-function fillMax() {
-  const cap = maxQuantity.value
-  if (cap <= 0) return
-  quantity.value = String(Math.floor(cap / lot.value) * lot.value)
+function fillAll() {
+  if (maxQty.value > 0) quantity.value = String(maxQty.value)
 }
 
 function setMessage(text: string, type: 'ok' | 'err') {
@@ -177,16 +196,13 @@ function setMessage(text: string, type: 'ok' | 'err') {
 
 async function submit() {
   message.value = ''
+  if (!loggedIn.value) return setMessage('请先登录后再下单', 'err')
   const qty = Number(quantity.value)
   if (!qty || qty <= 0) return setMessage('请输入委托数量', 'err')
   if (qty % lot.value !== 0) return setMessage(`数量需为 ${lot.value} 股的整数倍`, 'err')
+  if (side.value === 'sell' && sellable.value > 0 && qty > sellable.value)
+    return setMessage(`可卖数量只有 ${sellable.value} 股`, 'err')
   if (orderType.value === 'limit' && !(Number(price.value) > 0)) return setMessage('请输入委托价格', 'err')
-  if (isBuy.value && maxQuantity.value > 0 && qty > maxQuantity.value) {
-    return setMessage(`可买仅 ${maxQuantity.value} 股`, 'err')
-  }
-  if (!isBuy.value && sellable.value !== null && qty > sellable.value) {
-    return setMessage(`可卖仅 ${sellable.value} 股`, 'err')
-  }
   submitting.value = true
   try {
     const res = await tradeApi.order({
@@ -200,18 +216,23 @@ async function submit() {
     if (o.status === 'filled') {
       setMessage(`已全部成交：均价 ${fmtPrice(o.avg_fill_price, 4)}，费用 ${fmtPrice(o.fee)} 元`, 'ok')
     } else if (o.status === 'partial') {
-      setMessage(`部分成交 ${o.filled_quantity}/${o.quantity} 股，余量继续挂单`, 'ok')
+      setMessage(`部分成交 ${o.filled_quantity}/${o.quantity} 股`, 'ok')
     } else {
-      setMessage('委托已受理，价格到达后会成交，可在「交易」页查看', 'ok')
+      setMessage('委托已受理，可在「委托与成交」中查看', 'ok')
     }
     emit('submitted', { code: code.value, side: side.value })
-    await refreshPreview()
-    if (!isBuy.value) await loadSellable()
+    // 下单后资金与持仓都变了，容量与预估要一起重算
+    await Promise.all([loadCapacity(), refreshPreview()])
   } catch (e: any) {
     setMessage(e?.message ?? '下单失败', 'err')
   } finally {
     submitting.value = false
   }
+}
+
+function goLogin() {
+  close()
+  void router.push('/login')
 }
 
 watch(
@@ -223,14 +244,16 @@ watch(
     }
     message.value = ''
     preview.value = null
-    sellable.value = null
     code.value = props.code
     side.value = props.side
+    // 换标的要重新取行情，价格先清空由行情回填
+    quote.value = null
+    meta.value = null
     price.value = ''
     quantity.value = '100'
     orderType.value = 'limit'
     guardOn()
-    void loadSymbol().then(refreshPreview)
+    void loadSymbol().then(() => Promise.all([loadCapacity(), refreshPreview()]))
   },
 )
 
@@ -247,20 +270,11 @@ onBeforeUnmount(guardOff)
       <div class="sheet">
         <div class="sheet-top">
           <span class="sheet-grab" />
+          <!-- 方向由入口决定，这里只做「当前在做什么」的提示，不再提供切换 -->
+          <span class="side-tag" :class="side">{{ side === 'buy' ? '买入' : '卖出' }}</span>
           <button class="sheet-close" aria-label="关闭" @click="close">✕</button>
         </div>
 
-        <!-- 方向标题：只陈述「正在买/卖什么」，不再提供切换 -->
-        <div class="head">
-          <span class="head-tag" :class="isBuy ? 'buy' : 'sell'">{{ sideLabel }}</span>
-          <span class="head-name">{{ quote?.name ?? '—' }}</span>
-          <span class="head-code">{{ code }}</span>
-          <span class="head-price tabular" :class="(quote?.change ?? 0) >= 0 ? 'up' : 'down'">
-            {{ fmtPrice(quote?.price ?? 0) }}
-          </span>
-        </div>
-
-        <!-- 委托方式 -->
         <div class="seg-row">
           <button class="seg-btn" :class="{ on: orderType === 'limit' }" @click="orderType = 'limit'">
             限价委托
@@ -270,10 +284,9 @@ onBeforeUnmount(guardOff)
           </button>
         </div>
 
-        <!-- 价格：－ 输入 ＋ -->
+        <!-- 价格：限价必填，市价置灰 -->
         <div class="field">
           <span class="flabel">价格</span>
-          <button class="step" :disabled="orderType === 'market'" @click="stepPrice(-1)">－</button>
           <input
             v-model="price"
             class="finput tabular"
@@ -282,30 +295,31 @@ onBeforeUnmount(guardOff)
             :disabled="orderType === 'market'"
             :placeholder="orderType === 'market' ? '按市价成交' : '0.00'"
           />
-          <button class="step" :disabled="orderType === 'market'" @click="stepPrice(1)">＋</button>
+          <div class="steppers">
+            <button class="step" :disabled="orderType === 'market'" @click="stepPrice(-1)">－</button>
+            <button class="step" :disabled="orderType === 'market'" @click="stepPrice(1)">＋</button>
+          </div>
         </div>
 
-        <!-- 数量：－ 输入 ＋ -->
+        <!-- 数量：带可买/可卖提示与整手步进 -->
         <div class="field">
           <span class="flabel">数量</span>
-          <button class="step" @click="stepQty(-1)">－</button>
           <input v-model="quantity" class="finput tabular" type="number" inputmode="numeric" placeholder="0" />
-          <button class="step" @click="stepQty(1)">＋</button>
           <span class="unit">股</span>
+          <div class="steppers">
+            <button class="step" @click="stepQty(-1)">－</button>
+            <button class="step" @click="stepQty(1)">＋</button>
+          </div>
         </div>
 
-        <!-- 可买 / 可卖 + 快捷比例 -->
         <div class="cap-row">
           <span class="cap">
-            {{ isBuy ? '可买' : '可卖' }}
-            <b class="tabular">{{ maxQuantity || '—' }}</b> 股
+            {{ side === 'buy' ? '可买' : '可卖' }}
+            <b v-if="capacityReady" class="tabular">{{ maxQty }}</b>
+            <b v-else class="tabular muted">—</b>
+            股
           </span>
-          <div class="qbtns">
-            <button v-for="q in quickQty" :key="q" class="qbtn" @click="quantity = String(q)">
-              {{ q }}
-            </button>
-            <button class="qbtn max" @click="fillMax">全部</button>
-          </div>
+          <button v-if="maxQty > 0" class="cap-all" @click="fillAll">全部</button>
         </div>
 
         <div class="preview">
@@ -325,15 +339,23 @@ onBeforeUnmount(guardOff)
             <span class="tabular">{{ fmtPrice(preview?.fee.total ?? 0) }} 元</span>
           </div>
           <div class="prow">
-            <span>可用资金</span>
-            <span class="tabular">{{ fmtMoney(preview?.available_cash ?? 0) }}</span>
+            <span>可成交</span>
+            <span class="tabular">{{ preview?.fillable_quantity ?? 0 }} 股</span>
           </div>
         </div>
 
         <p v-if="message" class="msg" :class="messageType">{{ message }}</p>
 
-        <button class="btn btn-block" :class="isBuy ? 'btn-buy' : 'btn-sell'" :disabled="submitting" @click="submit">
-          {{ submitting ? '提交中…' : `确认${sideLabel}` }}
+        <!-- 未登录：给登录入口，而不是点了按钮才报错 -->
+        <button v-if="!loggedIn" class="btn btn-block btn-primary" @click="goLogin">登录后下单</button>
+        <button
+          v-else
+          class="btn btn-block"
+          :class="side === 'buy' ? 'btn-buy' : 'btn-sell'"
+          :disabled="submitting"
+          @click="submit"
+        >
+          {{ submitting ? '提交中…' : side === 'buy' ? '确认买入' : '确认卖出' }}
         </button>
         <p class="tip">撮合按价格优先、时间优先逐档成交；未成交部分资金自动解冻。</p>
       </div>
@@ -352,15 +374,18 @@ onBeforeUnmount(guardOff)
 }
 .sheet {
   width: 100%;
+  max-height: 90vh;
+  overflow-y: auto;
   background: var(--c-bg-elevated);
   border-radius: var(--r-xl) var(--r-xl) 0 0;
   border-top: 1px solid var(--c-line);
-  padding: 8px var(--sp-4) calc(var(--sp-4) + var(--safe-bottom));
+  padding: 8px 16px calc(16px + var(--safe-bottom));
   box-shadow: 0 -12px 40px rgba(0, 0, 0, 0.45);
+  box-sizing: border-box;
 }
 .sheet-top {
   position: relative;
-  height: 18px;
+  height: 22px;
 }
 .sheet-grab {
   position: absolute;
@@ -372,10 +397,28 @@ onBeforeUnmount(guardOff)
   background: var(--c-line-strong);
   transform: translateX(-50%);
 }
+.side-tag {
+  position: absolute;
+  left: 0;
+  top: 0;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 6px;
+  line-height: 18px;
+}
+.side-tag.buy {
+  color: #ff8b8d;
+  background: rgba(232, 56, 61, 0.14);
+}
+.side-tag.sell {
+  color: #69e2a5;
+  background: rgba(18, 183, 106, 0.14);
+}
 .sheet-close {
   position: absolute;
   right: -4px;
-  top: -6px;
+  top: -4px;
   width: 28px;
   height: 28px;
   border: none;
@@ -385,51 +428,10 @@ onBeforeUnmount(guardOff)
   cursor: pointer;
 }
 
-.head {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  padding: 2px 0 4px;
-  min-width: 0;
-}
-.head-tag {
-  font-size: 11px;
-  font-weight: 700;
-  padding: 2px 7px;
-  border-radius: 6px;
-  flex: 0 0 auto;
-}
-.head-tag.buy {
-  color: #fff;
-  background: linear-gradient(135deg, #ff5c5e, #d92b2f);
-}
-.head-tag.sell {
-  color: #fff;
-  background: linear-gradient(135deg, #1cc477, #0a8f52);
-}
-.head-name {
-  font-size: 15px;
-  font-weight: 700;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.head-code {
-  font-size: 11px;
-  color: var(--c-text-3);
-  flex: 0 0 auto;
-}
-.head-price {
-  margin-left: auto;
-  font-size: 15px;
-  font-weight: 700;
-  flex: 0 0 auto;
-}
-
 .seg-row {
   display: flex;
-  gap: 6px;
-  margin-top: var(--sp-2);
+  gap: 8px;
+  margin-top: 10px;
 }
 .seg-btn {
   flex: 1;
@@ -437,8 +439,8 @@ onBeforeUnmount(guardOff)
   border: 1px solid var(--c-line);
   border-radius: 9px;
   color: var(--c-text-2);
+  font-family: inherit;
   font-size: 13px;
-  font-weight: 600;
   padding: 9px 0;
   cursor: pointer;
 }
@@ -446,18 +448,19 @@ onBeforeUnmount(guardOff)
   border-color: var(--c-brand);
   color: #ff8b8d;
   background: rgba(232, 56, 61, 0.12);
+  font-weight: 600;
 }
 
 .field {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 9px 0;
+  padding: 10px 0;
   border-bottom: 1px solid var(--c-line);
-  margin-top: var(--sp-2);
+  margin-top: 8px;
 }
 .flabel {
-  flex: 0 0 34px;
+  flex: 0 0 40px;
   font-size: 12px;
   color: var(--c-text-2);
 }
@@ -468,9 +471,10 @@ onBeforeUnmount(guardOff)
   border: none;
   outline: none;
   color: var(--c-text);
+  font-family: inherit;
   font-size: 19px;
   font-weight: 700;
-  text-align: center;
+  text-align: right;
 }
 .finput:disabled {
   color: var(--c-text-3);
@@ -478,58 +482,50 @@ onBeforeUnmount(guardOff)
 .unit {
   font-size: 11px;
   color: var(--c-text-3);
-  flex: 0 0 auto;
+}
+.steppers {
+  display: flex;
+  gap: 6px;
 }
 .step {
-  flex: 0 0 auto;
-  width: 34px;
-  height: 34px;
-  border-radius: 9px;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
   background: var(--c-card);
   border: 1px solid var(--c-line);
   color: var(--c-text);
-  font-size: 16px;
+  font-size: 15px;
   line-height: 1;
   cursor: pointer;
 }
 .step:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
+  color: var(--c-text-3);
+  cursor: default;
 }
 
 .cap-row {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin: var(--sp-3) 0 var(--sp-2);
+  justify-content: space-between;
+  padding: 8px 0 2px;
 }
 .cap {
   font-size: 11px;
   color: var(--c-text-3);
-  flex: 0 0 auto;
 }
 .cap b {
   color: var(--c-text-2);
+  font-weight: 600;
+  margin: 0 2px;
 }
-.qbtns {
-  display: flex;
-  gap: 6px;
-  flex: 1;
-  justify-content: flex-end;
-  flex-wrap: wrap;
-}
-.qbtn {
-  background: var(--c-card);
-  border: 1px solid var(--c-line);
-  border-radius: 8px;
-  color: var(--c-text-2);
+.cap-all {
+  background: none;
+  border: none;
+  color: var(--c-brand);
   font-size: 11px;
-  padding: 6px 10px;
+  font-weight: 600;
+  padding: 0;
   cursor: pointer;
-}
-.qbtn.max {
-  border-color: rgba(232, 56, 61, 0.5);
-  color: #ff8b8d;
 }
 
 .preview {
@@ -537,7 +533,7 @@ onBeforeUnmount(guardOff)
   border: 1px solid var(--c-line);
   border-radius: var(--r-md);
   padding: 10px 12px;
-  margin-bottom: var(--sp-3);
+  margin: 10px 0 12px;
 }
 .prow {
   display: flex;
@@ -546,13 +542,15 @@ onBeforeUnmount(guardOff)
   color: var(--c-text-2);
   padding: 3px 0;
 }
-.prow em {
+.prow em,
+.muted {
   font-style: normal;
+  color: var(--c-text-3);
 }
 
 .msg {
   font-size: 12px;
-  margin: 0 0 var(--sp-2);
+  margin: 0 0 8px;
   padding: 8px 10px;
   border-radius: 8px;
 }

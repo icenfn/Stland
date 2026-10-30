@@ -54,7 +54,10 @@ onBeforeUnmount(() => market.stop())
       <div class="app-bar__inner">
         <div class="brand">股岛</div>
         <div class="grow" />
-
+        <span class="feed-chip" :class="state.feed">{{ feedLabel }}</span>
+        <span class="session-chip" :class="{ open: session?.can_trade }">
+          {{ session?.label ?? '休市' }}
+        </span>
       </div>
     </header>
 

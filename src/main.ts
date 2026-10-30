@@ -3,7 +3,7 @@ import { createRouter, createWebHashHistory } from 'vue-router'
 import App from './App.vue'
 import { routes } from './router'
 import { useAuth } from './stores/auth'
-import { setUnauthorizedHandler } from './api/http'
+import { setUnauthorizedHandler, TOKEN_KEY } from './api/http'
 import { assertConfig, apiConfig, serverLabel } from './config'
 
 import './styles/global.css'
@@ -63,8 +63,18 @@ try {
   const auth = useAuth()
   auth.bootstrap()
 
-  // 全局 401 处理：清理会话并跳回登录页，避免任何页面卡在"假登录"状态
+  /**
+   * 全局 401 处理：清理会话并跳回登录页，避免页面卡在"假登录"状态。
+   *
+   * 但必须区分两种 401：
+   *   · 本来带着令牌，却被告知令牌无效 —— 会话真的失效了，才清会话并回登录页；
+   *   · 本来就没登录 —— 这是浏览公开行情时请求了需要账户的接口（例如首页的
+   *     资产概览）。这种情况下把人踢到登录页是错的：他只想看看行情，
+   *     不该连行情都看不到。交给发起方自己降级处理即可。
+   */
   setUnauthorizedHandler(() => {
+    const hadSession = Boolean(localStorage.getItem(TOKEN_KEY))
+    if (!hadSession) return
     auth.forceLogout()
     if (router.currentRoute.value.name !== 'login') {
       void router.replace({ name: 'login' })
@@ -74,13 +84,12 @@ try {
   /**
    * 允许未登录浏览的页面。
    *
-   * 行情、个股、指数是公开信息，不该因为没账号就打不开 ——
-   * 上一版守卫把除登录页以外的所有路由都挡回登录页，等于不注册就看不到任何行情。
-   * 交易、委托、资产这些涉及账户数据的页面仍然要求登录。
+   * 行情、个股、指数都是公开信息，不该因为没账号就打不开。
+   * 自选、交易、委托这些属于账户数据，仍然要求登录。
    */
-  const BROWSE_WITHOUT_LOGIN = new Set(['home', 'market', 'watch', 'stock', 'index'])
+  const BROWSE_WITHOUT_LOGIN = new Set(['home', 'market', 'stock', 'index'])
 
-  // 路由守卫：未登录可浏览公开行情，账户相关页面仍要求登录；管理端路由校验角色
+  // 路由守卫：未登录可浏览公开行情；账户类页面仍需登录；管理端路由校验角色
   router.beforeEach((to) => {
     const isPublic = to.meta.public === true
     const browseOk = BROWSE_WITHOUT_LOGIN.has(String(to.name ?? ''))

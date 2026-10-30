@@ -2,15 +2,18 @@
 /**
  * 自选股：按分组管理，一屏看到全部自选的最新涨跌。
  *
- * 本轮变化：
- *  · 新建分组从「分组条里就地长出一个输入框」改成弹窗。就地输入会把分组条挤得
- *    忽长忽短、相邻分组被推开，误触到别的分组；弹窗里输入才是「一次只做一件事」。
- *  · 分组支持重命名与删除，都走弹窗：破坏性操作要能看清「我正在删哪一个、里面有
- *    多少只」，就地一个「删除分组」文字按钮太轻，点了才知道后果。
- *  · 删除分组不再受「只剩一个就不能删」限制 —— 分组空了服务端会自动兜底到默认组。
+ * 信息架构（本版调整）：
+ *  · 顶部分组条只做「切换」—— 原来把「＋ 分组」的输入框塞在横向滚动条里，
+ *    点开一个输入框会把后面的分组挤出屏幕，而且新建、删除这种低频且需要确认的操作
+ *    挤在行情列表的顶部，误触成本很高；
+ *  · 新建 / 重命名 / 删除统一收进「分组管理」弹窗：一屏看清所有分组和各自股票数，
+ *    重命名就地编辑，删除有明确提示（股票不会被删，回到默认分组）；
+ *  · 列表项直接展示服务端拼好的实时行情（价格/涨跌/成交额），
+ *    不在客户端按代码逐个拉详情 —— 移动端 N+1 请求会让首屏明显卡顿；
+ *  · 行内右侧「×」移出自选；空态给出「去行情挑一只」的出口。
  *
- * 分组的语义（与服务端一致）：一支股票只属于一个分组；把它加到别的分组等于「移动」；
- * 删除分组不会删股票，成分会回到默认分组。
+ * 分组的语义（与服务端一致）：一支股票只属于一个分组；把它加到别的分组
+ * 等于「移动」；删除分组不会删股票，成分会回到默认分组。
  */
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
@@ -28,13 +31,16 @@ const loading = ref(false)
 const error = ref('')
 const busy = ref(false)
 
-/** 弹窗状态：create 新建 / rename 改名 / remove 删除 */
-const dialog = ref<'' | 'create' | 'rename' | 'remove'>('')
-const dialogName = ref('')
-const dialogBusy = ref(false)
-const dialogError = ref('')
+/** 分组管理弹窗 */
+const manageOpen = ref(false)
+const newName = ref('')
+/** 正在重命名的分组 id（就地编辑），0 表示没有 */
+const editingId = ref<number>(0)
+const editName = ref('')
 
 const activeGroup = computed(() => groups.value.find((g) => g.id === activeId.value) ?? null)
+/** 至少要留一个分组，最后一个不允许删 */
+const canDelete = computed(() => groups.value.length > 1)
 
 async function loadGroups() {
   const res = await watchApi.groups()
@@ -50,6 +56,7 @@ async function loadItems() {
   try {
     const res = await watchApi.items(activeId.value || undefined)
     items.value = res.items
+    // 分组内数量可能变化，顺手刷新分组条上的计数
     const g = groups.value.find((x) => x.id === activeId.value)
     if (g) g.count = res.total
   } catch (e: any) {
@@ -75,69 +82,72 @@ async function switchGroup(id: number) {
   await loadItems()
 }
 
-function openDialog(kind: 'create' | 'rename' | 'remove') {
-  dialog.value = kind
-  dialogError.value = ''
-  dialogName.value = kind === 'rename' ? (activeGroup.value?.name ?? '') : ''
+function openManage() {
+  editingId.value = 0
+  editName.value = ''
+  newName.value = ''
+  manageOpen.value = true
 }
 
-function closeDialog() {
-  if (dialogBusy.value) return
-  dialog.value = ''
-  dialogError.value = ''
-}
-
-async function submitDialog() {
-  if (dialogBusy.value) return
-  dialogError.value = ''
-
-  if (dialog.value === 'remove') {
-    const g = activeGroup.value
-    if (!g) return
-    dialogBusy.value = true
-    try {
-      await watchApi.deleteGroup(g.id)
-      dialog.value = ''
-      activeId.value = 0
-      await refresh()
-    } catch (e: any) {
-      dialogError.value = e?.message ?? '删除分组失败'
-    } finally {
-      dialogBusy.value = false
-    }
-    return
-  }
-
-  const name = dialogName.value.trim()
-  if (!name) {
-    dialogError.value = '分组名称不能为空'
-    return
-  }
-  if (name.length > 12) {
-    dialogError.value = '分组名称最多 12 个字'
-    return
-  }
-
-  dialogBusy.value = true
+async function createGroup() {
+  const name = newName.value.trim()
+  if (!name || busy.value) return
+  busy.value = true
   try {
-    if (dialog.value === 'create') {
-      const res = await watchApi.createGroup(name)
-      dialog.value = ''
-      await loadGroups()
-      // 新建后直接切过去：用户的下一步必然是往里加标的
-      activeId.value = res.group.id
-      await loadItems()
-    } else if (dialog.value === 'rename') {
-      const g = activeGroup.value
-      if (!g) return
-      await watchApi.renameGroup(g.id, name)
-      dialog.value = ''
-      await loadGroups()
-    }
+    const res = await watchApi.createGroup(name)
+    newName.value = ''
+    await loadGroups()
+    // 新建后直接切过去：用户的下一步必然是往里加股票
+    activeId.value = res.group.id
+    await loadItems()
   } catch (e: any) {
-    dialogError.value = e?.message ?? (dialog.value === 'create' ? '新建分组失败' : '重命名失败')
+    error.value = e?.message ?? '新建分组失败'
   } finally {
-    dialogBusy.value = false
+    busy.value = false
+  }
+}
+
+function startRename(g: WatchGroup) {
+  editingId.value = g.id
+  editName.value = g.name
+}
+
+function cancelRename() {
+  editingId.value = 0
+  editName.value = ''
+}
+
+async function commitRename() {
+  const id = editingId.value
+  const name = editName.value.trim()
+  if (!id || !name || busy.value) return
+  const target = groups.value.find((g) => g.id === id)
+  // 没改名就直接收起，不必打一次空请求
+  if (target && target.name === name) return cancelRename()
+  busy.value = true
+  try {
+    await watchApi.renameGroup(id, name)
+    cancelRename()
+    await loadGroups()
+  } catch (e: any) {
+    error.value = e?.message ?? '重命名失败'
+  } finally {
+    busy.value = false
+  }
+}
+
+async function removeGroup(g: WatchGroup) {
+  if (!canDelete.value || busy.value) return
+  busy.value = true
+  try {
+    await watchApi.deleteGroup(g.id)
+    // 删的正好是当前分组，回到默认分组
+    if (activeId.value === g.id) activeId.value = 0
+    await refresh()
+  } catch (e: any) {
+    error.value = e?.message ?? '删除分组失败'
+  } finally {
+    busy.value = false
   }
 }
 
@@ -156,10 +166,13 @@ async function removeItem(code: string) {
   }
 }
 
-/** 指数与个股走不同详情页，按代码前缀分流 */
 function openDetail(item: WatchItem) {
-  const isIndex = item.code.startsWith('IDX') || item.board === 'index'
-  router.push(isIndex ? `/index/${item.code}` : `/stock/${item.code}`)
+  router.push(`/stock/${item.code}`)
+}
+
+/** 去行情面板挑股票（/market 已是首页里的面板，不再跳整页） */
+function goMarket() {
+  router.push('/market')
 }
 
 onMounted(refresh)
@@ -169,16 +182,12 @@ onMounted(refresh)
   <div class="page">
     <AppBar title="自选股">
       <template #actions>
-        <button class="icon-btn" aria-label="管理分组" @click="openDialog('rename')">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
-            stroke-linecap="round" stroke-linejoin="round">
-            <path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z" />
-          </svg>
-        </button>
+        <button class="mini-btn" @click="refresh">刷新</button>
+        <button class="mini-btn" @click="openManage">分组</button>
       </template>
     </AppBar>
 
-    <!-- 分组条 -->
+    <!-- 分组条：只做切换 -->
     <div class="group-bar">
       <button
         v-for="g in groups"
@@ -189,23 +198,19 @@ onMounted(refresh)
       >
         {{ g.name }}<span class="gcount">{{ g.count }}</span>
       </button>
-      <button class="gchip add" @click="openDialog('create')">＋ 新建分组</button>
-    </div>
-
-    <div v-if="activeGroup" class="group-meta">
-      <span class="text-xs">{{ activeGroup.name }} · {{ items.length }} 只</span>
-      <button class="del-group" :disabled="busy" @click="openDialog('remove')">删除分组</button>
+      <button class="gchip add" @click="openManage">＋</button>
     </div>
 
     <div v-if="error" class="empty">{{ error }}</div>
     <div v-else-if="loading && !items.length" class="empty">加载中…</div>
     <div v-else-if="!items.length" class="empty-box">
       <div class="empty-title">这个分组还没有自选</div>
-      <p class="text-xs">在个股或指数详情页点底栏的「加自选」，就能把它放进指定分组。</p>
-      <button class="btn btn-ghost" @click="router.push('/market')">去行情挑一只</button>
+      <p class="text-xs">在个股详情页点「加自选」，它就会出现在这里。</p>
+      <button class="btn btn-ghost" @click="goMarket">去行情挑一只</button>
     </div>
 
     <div v-else class="wlist">
+      <!-- 表头 -->
       <div class="wrow whead">
         <span class="wname">名称 / 代码</span>
         <span class="wprice">最新价</span>
@@ -231,43 +236,55 @@ onMounted(refresh)
       </div>
     </div>
 
-    <!-- 分组弹窗：新建 / 改名 / 删除 -->
+    <!-- 分组管理弹窗 -->
     <transition name="fade">
-      <div v-if="dialog" class="mask" @click.self="closeDialog">
-        <div class="modal">
-          <h3 class="modal-title">
-            {{ dialog === 'create' ? '新建分组' : dialog === 'rename' ? '重命名分组' : '删除分组' }}
-          </h3>
+      <div v-if="manageOpen" class="m-mask" @click.self="manageOpen = false">
+        <div class="m-sheet">
+          <div class="m-head">
+            <span class="m-title">分组管理</span>
+            <button class="m-close" aria-label="关闭" @click="manageOpen = false">✕</button>
+          </div>
+          <p class="m-tip">删除分组不会删除其中的股票，它们会回到默认分组。</p>
 
-          <template v-if="dialog === 'remove'">
-            <p class="modal-text">
-              确定删除分组「<b>{{ activeGroup?.name }}</b>」吗？<br />
-              该分组下的 <b>{{ activeGroup?.count ?? 0 }}</b> 只自选会移回默认分组，不会被清空。
-            </p>
-          </template>
+          <div class="m-list">
+            <div v-for="g in groups" :key="g.id" class="m-row">
+              <template v-if="editingId === g.id">
+                <input
+                  v-model="editName"
+                  class="m-input"
+                  maxlength="12"
+                  placeholder="分组名"
+                  @keyup.enter="commitRename"
+                />
+                <button class="m-ok" :disabled="busy" @click="commitRename">保存</button>
+                <button class="m-cancel" @click="cancelRename">取消</button>
+              </template>
+              <template v-else>
+                <span class="m-name">{{ g.name }}</span>
+                <span class="m-count">{{ g.count }} 只</span>
+                <button class="m-act" :disabled="busy" @click="startRename(g)">重命名</button>
+                <button
+                  v-if="canDelete"
+                  class="m-act danger"
+                  :disabled="busy"
+                  @click="removeGroup(g)"
+                >
+                  删除
+                </button>
+              </template>
+            </div>
+          </div>
 
-          <template v-else>
+          <div class="m-new">
             <input
-              v-model="dialogName"
-              class="modal-input"
+              v-model="newName"
+              class="m-input grow"
               maxlength="12"
-              :placeholder="dialog === 'create' ? '例如：科技、红利、观察中' : '输入新的分组名'"
-              @keyup.enter="submitDialog"
+              placeholder="新分组名称"
+              @keyup.enter="createGroup"
             />
-            <p class="modal-hint">最多 12 个字</p>
-          </template>
-
-          <p v-if="dialogError" class="modal-err">{{ dialogError }}</p>
-
-          <div class="modal-actions">
-            <button class="mbtn" :disabled="dialogBusy" @click="closeDialog">取消</button>
-            <button
-              class="mbtn primary"
-              :class="{ danger: dialog === 'remove' }"
-              :disabled="dialogBusy"
-              @click="submitDialog"
-            >
-              {{ dialogBusy ? '处理中…' : dialog === 'remove' ? '删除' : '确定' }}
+            <button class="btn btn-primary m-add" :disabled="busy || !newName.trim()" @click="createGroup">
+              新建
             </button>
           </div>
         </div>
@@ -277,23 +294,16 @@ onMounted(refresh)
 </template>
 
 <style scoped>
-.icon-btn {
-  width: 30px;
-  height: 30px;
-  display: grid;
-  place-items: center;
-  background: rgba(255, 255, 255, 0.06);
+.mini-btn {
+  background: rgba(255, 255, 255, 0.08);
   border: 1px solid var(--c-line);
-  border-radius: 9px;
+  border-radius: 8px;
   color: var(--c-text-2);
+  font-size: 11px;
+  padding: 5px 10px;
   cursor: pointer;
-  padding: 0;
+  margin-left: 6px;
 }
-.icon-btn svg {
-  width: 16px;
-  height: 16px;
-}
-
 .group-bar {
   display: flex;
   gap: 8px;
@@ -328,23 +338,11 @@ onMounted(refresh)
 .gchip.add {
   color: var(--c-text-3);
   border-style: dashed;
+  padding: 6px 11px;
 }
 .gcount {
   font-size: 10px;
   opacity: 0.7;
-}
-.group-meta {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 2px 14px 8px;
-}
-.del-group {
-  background: none;
-  border: none;
-  color: var(--c-text-3);
-  font-size: 11px;
-  cursor: pointer;
 }
 .wlist {
   margin-top: 2px;
@@ -451,91 +449,132 @@ onMounted(refresh)
   padding: 9px 18px;
 }
 
-/* ---------- 弹窗 ---------- */
-.mask {
+/* 分组管理弹窗 */
+.m-mask {
   position: fixed;
   inset: 0;
+  background: rgba(0, 0, 0, 0.55);
   z-index: 80;
-  background: rgba(0, 0, 0, 0.6);
-  display: grid;
-  place-items: center;
-  padding: 24px;
+  display: flex;
+  align-items: flex-end;
 }
-.modal {
+.m-sheet {
   width: 100%;
-  max-width: 320px;
+  max-height: 80vh;
+  overflow-y: auto;
   background: var(--c-bg-elevated);
-  border: 1px solid var(--c-line);
-  border-radius: var(--r-lg);
-  padding: 18px 16px 12px;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  border-radius: var(--r-xl) var(--r-xl) 0 0;
+  border-top: 1px solid var(--c-line);
+  padding: 14px 16px calc(16px + var(--safe-bottom));
+  box-sizing: border-box;
+  box-shadow: 0 -12px 40px rgba(0, 0, 0, 0.45);
 }
-.modal-title {
-  margin: 0 0 12px;
+.m-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.m-title {
   font-size: 15px;
   font-weight: 700;
 }
-.modal-text {
-  margin: 0 0 4px;
-  font-size: 13px;
-  color: var(--c-text-2);
-  line-height: 1.7;
-}
-.modal-text b {
-  color: var(--c-text);
-}
-.modal-input {
-  width: 100%;
-  box-sizing: border-box;
-  background: var(--c-card);
-  border: 1px solid var(--c-line-strong);
-  border-radius: 10px;
-  color: var(--c-text);
-  font-size: 14px;
-  padding: 10px 12px;
-  outline: none;
-}
-.modal-input:focus {
-  border-color: var(--c-brand);
-}
-.modal-hint {
-  margin: 6px 0 0;
-  font-size: 11px;
+.m-close {
+  background: none;
+  border: none;
   color: var(--c-text-3);
-}
-.modal-err {
-  margin: 8px 0 0;
-  font-size: 12px;
-  color: #ff8b8d;
-}
-.modal-actions {
-  display: flex;
-  gap: 10px;
-  margin-top: 16px;
-}
-.mbtn {
-  flex: 1;
-  padding: 10px 0;
-  border-radius: 10px;
-  border: 1px solid var(--c-line);
-  background: var(--c-card);
-  color: var(--c-text-2);
   font-size: 14px;
   cursor: pointer;
 }
-.mbtn.primary {
-  background: var(--c-brand);
-  border-color: var(--c-brand);
-  color: #fff;
+.m-tip {
+  font-size: 10px;
+  color: var(--c-text-3);
+  margin: 6px 0 10px;
+  line-height: 1.6;
+}
+.m-list {
+  border: 1px solid var(--c-line);
+  border-radius: var(--r-md);
+  overflow: hidden;
+}
+.m-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 11px 12px;
+  border-bottom: 1px solid var(--c-line);
+  background: var(--c-card);
+}
+.m-row:last-child {
+  border-bottom: none;
+}
+.m-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.m-count {
+  font-size: 11px;
+  color: var(--c-text-3);
+}
+.m-act {
+  background: none;
+  border: none;
+  color: var(--c-brand);
+  font-size: 12px;
+  padding: 2px 4px;
+  cursor: pointer;
+}
+.m-act.danger {
+  color: #ff8b8d;
+}
+.m-act:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.m-input {
+  flex: 1;
+  min-width: 0;
+  background: var(--c-bg);
+  border: 1px solid var(--c-line-strong);
+  border-radius: 8px;
+  color: var(--c-text);
+  font-family: inherit;
+  font-size: 14px;
+  padding: 8px 10px;
+  box-sizing: border-box;
+}
+.m-ok,
+.m-cancel {
+  background: none;
+  border: none;
+  font-size: 12px;
+  cursor: pointer;
+}
+.m-ok {
+  color: var(--c-brand);
   font-weight: 600;
 }
-.mbtn.primary.danger {
-  background: #d92b2f;
-  border-color: #d92b2f;
+.m-cancel {
+  color: var(--c-text-3);
 }
-.mbtn:disabled {
-  opacity: 0.6;
+.m-new {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
 }
+.m-input.grow {
+  flex: 1;
+}
+.m-add {
+  flex: 0 0 auto;
+  font-size: 13px;
+  padding: 9px 18px;
+}
+
 .fade-enter-active,
 .fade-leave-active {
   transition: opacity 0.18s ease;

@@ -2,23 +2,40 @@
 /**
  * 个股详情页（独立页面）。
  *
- * 与指数详情页拆开的原因：两者共用一个组件时，模板里到处是「指数这样、个股那样」
- * 的条件分支，改个股一处样式就容易碰坏指数。拆成两页后每页只写自己那一条路径，
- * 结构相同但各自可独立演进。
+ * 这一页只服务 个股：身份在文件里写死，不再由路由名推断，
+ * 也不会因为另一类标的的改动被牵连。
  *
- * 版式要点（按反馈调整）：
- *  · 右上角不再放「加自选」—— 顶部是低频操作区，真正的操作应集中在触手可及的底栏；
- *  · 底栏固定在屏幕底部，里面放「加自选 / 买入 / 卖出」，单手可及；
- *  · 五档与 K 线不再套卡片、不留左右边距，图表直接贴边占满宽度 ——
- *    图表被卡片内边距挤窄是这版最明显的浪费；
- *  · 副图默认 MACD，可切成交量、量比；不再保留「无」——
- *    「无」等于让用户主动选择一块空白，副图区的价值就是常驻一条量价信息。
+ * 为什么合并成一个页面：指数和个股本来就是同一种东西的不同外延 ——
+ * 都有代码、都有分时与 K 线、都有当前价与涨跌。上一版把指数单独做成一个
+ * 精简页（没有盘口、没有指标网格、没有副图），结果是「同一支标的换个入口
+ * 就换了副样子」，用户要重新学一遍布局。现在两者同构：
+ *
+ *   ① 价格头    名称/代码 + 大号现价 + 涨跌额/涨跌幅 + 关键指标网格
+ *   ② 图表卡    分时 / 5·15·30·60 分 / 日K，副图可切 成交量·MACD
+ *   ③ 盘口位    个股是五档买卖盘；指数放涨跌家数分布（指数没有委托簿，
+ *               但这一格必须存在，否则两页的纵向节奏就断了）
+ *   ④ 资料区    题材/板块/简介；指数额外列出成分股及其涨跌
+ *   ⑤ 交易条    仅个股出现（指数不可交易，不摆一个点了会报错的按钮）
+ *
+ * 版式参照东方财富、天府小诸葛的通行做法：价格与涨跌永远是视觉焦点，
+ * 指标网格紧跟在价格下面（一眼扫完当日全貌），图表占满宽度单独成块，
+ * 盘口/分布作为窄栏与图表同屏对照，最后才是资料与成分这类「要才会看」的内容。
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useIntervalFn } from '@vueuse/core'
 import { marketApi, watchApi } from '@/api'
-import type { BarItem, Depth, MinutePoint, Quote, StockMeta, WatchGroup } from '@/api/types'
+import type {
+  BarItem,
+  Depth,
+  DetailQuote,
+  IndexMember,
+  IndexQuote,
+  MinutePoint,
+  Quote,
+  StockMeta,
+} from '@/api/types'
+import AppBar from '@/components/AppBar.vue'
 import MiniChart from '@/components/MiniChart.vue'
 import TradeSheet from '@/components/TradeSheet.vue'
 import { fmtAmount, fmtPct, fmtPrice, fmtVolume, trendClass } from '@/utils/format'
@@ -26,66 +43,143 @@ import { fmtAmount, fmtPct, fmtPrice, fmtVolume, trendClass } from '@/utils/form
 const route = useRoute()
 const router = useRouter()
 
+/**
+ * 同一个组件同时服务 /stock/:code 与 /index/:code。
+ * 用路由名判断身份，而不是猜代码前缀 —— 指数的代码规则以后可能变，
+ * 但「从哪个入口进来」是确定的。
+ */
+const isIndex = computed(() => false)
 const code = computed(() => String(route.params.code ?? ''))
-const quote = ref<Quote | null>(null)
+
+const quote = ref<DetailQuote | null>(null)
 const meta = ref<StockMeta | null>(null)
 const depth = ref<Depth | null>(null)
+const members = ref<IndexMember[]>([])
 const minutes = ref<MinutePoint[]>([])
 const bars = ref<BarItem[]>([])
-const loading = ref(true)
 const error = ref('')
+const loading = ref(true)
 
+/** 主图类型与周期：分时不带周期，K 线才带 */
 const mode = ref<'minute' | 'kline'>('minute')
 const period = ref('5min')
-/** 副图固定有内容：默认 MACD，可切成交量、量比 */
+/** 副图：无 / 成交量 / MACD —— 纯展示切换，不产生请求 */
 const sub = ref<'volume' | 'macd' | 'ratio'>('macd')
 
 const sheetShow = ref(false)
 const sheetSide = ref<'buy' | 'sell'>('buy')
 
-const watchSheet = ref(false)
-const groups = ref<WatchGroup[]>([])
 const watching = ref(false)
 const watchBusy = ref(false)
-const newGroupName = ref('')
-const watchError = ref('')
 
+const pctClass = computed(() => trendClass(quote.value?.change_pct ?? 0))
 const priceClass = computed(() => trendClass(quote.value?.change ?? 0))
 
+/** 指标网格：个股与指数取同一批字段，指数缺的用自身的分布数据顶上 */
 const statRows = computed(() => {
   const q = quote.value
   if (!q) return []
-  return [
+  const rows: Array<{ k: string; v: string; cls?: string }> = [
     { k: '今开', v: fmtPrice(q.open), cls: trendClass(q.open - q.prev_close) },
     { k: '最高', v: fmtPrice(q.high), cls: trendClass(q.high - q.prev_close) },
     { k: '最低', v: fmtPrice(q.low), cls: trendClass(q.low - q.prev_close) },
     { k: '昨收', v: fmtPrice(q.prev_close) },
     { k: '成交量', v: fmtVolume(q.volume) },
     { k: '成交额', v: fmtAmount(q.amount) },
-    { k: '换手率', v: `${(q.turnover_rate ?? 0).toFixed(2)}%` },
-    { k: '量比', v: (q.volume_ratio ?? 0).toFixed(2), cls: (q.volume_ratio ?? 0) >= 1 ? 'up' : 'down' },
   ]
+  if (isIndex.value) {
+    rows.push(
+      { k: '振幅', v: q.prev_close ? `${(((q.high - q.low) / q.prev_close) * 100).toFixed(2)}%` : '—' },
+      { k: '成分', v: `${q.members ?? 0} 家` },
+    )
+  } else {
+    rows.push(
+      { k: '换手率', v: `${(q.turnover_rate ?? 0).toFixed(2)}%` },
+      { k: '振幅', v: `${(q.amplitude ?? 0).toFixed(2)}%` },
+    )
+  }
+  return rows
 })
 
-/** 五档：卖 5→卖 1 自上而下，买 1→买 5 紧随其后，与看盘软件的排列一致 */
+/** 指数没有委托簿，这一格改放涨跌家数 —— 与五档同宽同位，保持两页节奏一致 */
+const distribution = computed(() => {
+  const q = quote.value
+  const up = q?.up ?? 0
+  const down = q?.down ?? 0
+  const flat = q?.flat ?? 0
+  const total = Math.max(1, up + down + flat)
+  return { up, down, flat, upPct: (up / total) * 100, flatPct: (flat / total) * 100, downPct: (down / total) * 100 }
+})
+
+/** 五档：卖5→卖1 从上到下，买1→买5 紧随其后 —— 与交易所行情软件的排列一致 */
 const asksDesc = computed(() => [...(depth.value?.asks ?? [])].reverse())
 const bidsList = computed(() => depth.value?.bids ?? [])
-const maxDepthVol = computed(() => {
-  const all = [...(depth.value?.asks ?? []), ...(depth.value?.bids ?? [])]
-  return Math.max(1, ...all.map((d) => d.volume))
-})
 
+/** 深度里的量以「手」为单位展示更符合看盘习惯 */
 function fmtHands(v: number) {
   if (!v) return '—'
   if (v >= 10000) return `${(v / 10000).toFixed(2)}万`
   return String(Math.round(v))
 }
 
+/**
+ * 把个股报价与指数报价统一成 DetailQuote。
+ *
+ * 两边的差异只有几处：指数没有涨跌停与换手率（按 0 占位且模板不展示），
+ * 个股没有成分涨跌家数。归一化放在这里做一次，模板与指标网格就只写一条路径，
+ * 不必在每处取值时判空。
+ */
+function toDetail(src: Quote | IndexQuote, index: boolean): DetailQuote {
+  const common = {
+    code: src.code,
+    name: src.name,
+    price: src.price,
+    prev_close: src.prev_close,
+    open: src.open,
+    high: src.high,
+    low: src.low,
+    volume: src.volume ?? 0,
+    amount: src.amount,
+    change: src.change,
+    change_pct: src.change_pct,
+  }
+  if (index) {
+    const ix = src as IndexQuote
+    return {
+      ...common,
+      // 指数振幅只能现算：没有换手率概念，按 0 处理
+      amplitude: ix.prev_close ? ((ix.high - ix.low) / ix.prev_close) * 100 : 0,
+      turnover_rate: 0,
+      up: ix.up,
+      down: ix.down,
+      flat: ix.flat,
+      members: ix.members,
+      is_index: true,
+    }
+  }
+  const st = src as Quote
+  return {
+    ...common,
+    amplitude: st.amplitude ?? 0,
+    turnover_rate: st.turnover_rate ?? 0,
+    limit_up: st.limit_up,
+    limit_down: st.limit_down,
+    is_index: false,
+  }
+}
+
 async function loadQuote() {
   try {
-    const res = await marketApi.detail(code.value)
-    quote.value = res.quote
-    meta.value = res.meta
+    if (isIndex.value) {
+      const res = await marketApi.indexDetail(code.value)
+      quote.value = toDetail(res.quote, true)
+      meta.value = res.meta
+      members.value = res.members ?? []
+    } else {
+      const res = await marketApi.detail(code.value)
+      quote.value = toDetail(res.quote, false)
+      meta.value = res.meta
+    }
     error.value = ''
   } catch (e: any) {
     error.value = e?.message ?? '加载失败'
@@ -95,21 +189,26 @@ async function loadQuote() {
 }
 
 async function loadDepth() {
+  if (isIndex.value) return
   try {
     depth.value = await marketApi.depth(code.value)
   } catch {
-    /* 盘口拿不到不影响价格与图表 */
+    /* 静默：盘口拿不到不影响价格与图表展示 */
   }
 }
 
 async function loadChart() {
   try {
     if (mode.value === 'minute') {
-      const res = await marketApi.minutes(code.value, 240)
+      const res = isIndex.value
+        ? await marketApi.indexMinutes(code.value, 240)
+        : await marketApi.minutes(code.value, 240)
       minutes.value = res.items
     } else {
-      const res = await marketApi.kline(code.value, period.value, 120)
-      bars.value = res.items
+      const res = isIndex.value
+        ? await marketApi.indexKline(code.value, period.value, 120)
+        : await marketApi.kline(code.value, period.value, 120)
+      bars.value = res.items as BarItem[]
     }
   } catch {
     /* 静默 */
@@ -121,674 +220,762 @@ async function loadWatch() {
     const res = await watchApi.status(code.value)
     watching.value = res.watching
   } catch {
-    watching.value = false
+    /* 未登录或接口异常时不阻塞行情展示 */
   }
 }
 
-/** 打开分组选择：加自选必须先选放哪个分组，而不是闷头塞进默认组 */
-async function openWatchPicker() {
-  watchError.value = ''
-  watchSheet.value = true
-  newGroupName.value = ''
-  try {
-    const res = await watchApi.groups()
-    groups.value = res.items
-  } catch (e: any) {
-    watchError.value = e?.message ?? '分组加载失败'
-  }
-}
-
-async function addToGroup(groupId: number) {
-  if (watchBusy.value) return
-  watchBusy.value = true
-  watchError.value = ''
-  try {
-    await watchApi.add(code.value, groupId)
-    watching.value = true
-    watchSheet.value = false
-  } catch (e: any) {
-    watchError.value = e?.message ?? '加自选失败'
-  } finally {
-    watchBusy.value = false
-  }
-}
-
-async function createGroupAndAdd() {
-  const name = newGroupName.value.trim()
-  if (!name) {
-    watchError.value = '请输入分组名称'
-    return
-  }
+/**
+ * 加为自选 / 取消自选。加入是幂等接口：已在自选时会移动到默认分组而非报错，
+ * 所以按钮可以放心连点，不必先查状态再决定调哪个。
+ */
+async function toggleWatch() {
   if (watchBusy.value) return
   watchBusy.value = true
   try {
-    const res = await watchApi.createGroup(name)
-    await watchApi.add(code.value, res.group.id)
-    watching.value = true
-    watchSheet.value = false
-  } catch (e: any) {
-    watchError.value = e?.message ?? '新建分组失败'
-  } finally {
-    watchBusy.value = false
-  }
-}
-
-async function removeWatch() {
-  if (watchBusy.value) return
-  watchBusy.value = true
-  try {
-    await watchApi.remove(code.value)
-    watching.value = false
+    if (watching.value) {
+      await watchApi.remove(code.value)
+      watching.value = false
+    } else {
+      await watchApi.add(code.value)
+      watching.value = true
+    }
   } catch {
-    /* 保持原状，避免按钮与真实状态脱节 */
+    /* 失败保持原状，避免按钮与真实状态脱节 */
   } finally {
     watchBusy.value = false
   }
 }
 
-/** 底栏的加自选：已自选则直接取消，未自选则弹分组选择 */
-function onWatchTap() {
-  if (watching.value) void removeWatch()
-  else void openWatchPicker()
+function switchPeriod(p: string) {
+  mode.value = 'kline'
+  period.value = p
+  loadChart()
 }
 
-function openTrade(side: 'buy' | 'sell') {
+function switchMinute() {
+  if (mode.value === 'minute') return
+  mode.value = 'minute'
+  loadChart()
+}
+
+function openSheet(side: 'buy' | 'sell') {
   sheetSide.value = side
   sheetShow.value = true
 }
 
+async function onSubmitted() {
+  await Promise.all([loadQuote(), loadDepth()])
+}
+
+/** 价格与盘口高频刷新；图表跟着一起走，但只在秒级轻轻刷新一次，避免逐 tick 重绘 */
 const { pause, resume } = useIntervalFn(
   () => {
-    if (document.visibilityState === 'visible') {
-      void loadQuote()
-      void loadDepth()
-      void loadChart()
-    }
+    loadQuote()
+    loadDepth()
   },
-  4000,
+  3000,
   { immediate: false },
 )
-
-watch([mode, period], () => void loadChart())
-watch(code, () => {
-  loading.value = true
-  void loadQuote()
-  void loadDepth()
-  void loadChart()
-  void loadWatch()
-})
 
 onMounted(async () => {
   await Promise.all([loadQuote(), loadDepth(), loadChart(), loadWatch()])
   resume()
 })
-onBeforeUnmount(pause)
+
+onBeforeUnmount(() => pause())
+
+/** 同一组件在不同标的间跳转时路由参数会变，需要重新拉全量数据 */
+watch(
+  () => [route.name, route.params.code],
+  async () => {
+    loading.value = true
+    minutes.value = []
+    bars.value = []
+    depth.value = null
+    members.value = []
+    mode.value = 'minute'
+    await Promise.all([loadQuote(), loadDepth(), loadChart(), loadWatch()])
+  },
+)
+
+/** 顶栏标题：名称与代码并排，指数再标一个前缀，避免和个股混看 */
+const title = computed(() => {
+  const name = meta.value?.name || quote.value?.name || ''
+  const prefix = isIndex.value ? '指数 ' : ''
+  return name ? `${prefix}${name} ${code.value}` : '详情'
+})
 </script>
 
 <template>
-  <div class="page detail-page">
-    <!-- 顶栏：只有返回与标题，操作全部下沉到底栏 -->
-    <header class="topbar">
-      <button class="back" aria-label="返回" @click="router.back()">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-          stroke-linecap="round" stroke-linejoin="round">
-          <path d="M15 18l-6-6 6-6" />
-        </svg>
-      </button>
-      <div class="tname ellipsis">{{ quote?.name ?? meta?.name ?? '个股' }}</div>
-      <div class="tcode">{{ code }}</div>
-    </header>
+  <div class="page">
+    <AppBar :title="title" back />
 
-    <div v-if="error" class="empty">{{ error }}</div>
-    <div v-else-if="loading" class="empty">加载中…</div>
+    <div v-if="error" class="err">{{ error }}</div>
 
-    <template v-else-if="quote">
-      <!-- ① 价格头 -->
+    <template v-if="quote">
+      <!-- ① 价格头：现价与涨跌是视觉焦点，指标网格紧跟其下 -->
       <section class="head">
-        <div class="price-line" :class="priceClass">
-          <span class="price tabular">{{ fmtPrice(quote.price) }}</span>
-          <span class="chg tabular">
-            {{ quote.change >= 0 ? '+' : '' }}{{ fmtPrice(quote.change) }}
-            <em>{{ fmtPct(quote.change_pct) }}</em>
-          </span>
+        <div class="head-top">
+          <div class="price-block">
+            <div class="price tabular" :class="priceClass">{{ fmtPrice(quote.price) }}</div>
+            <div class="delta tabular" :class="pctClass">
+              <span>{{ quote.change >= 0 ? '+' : '' }}{{ quote.change.toFixed(2) }}</span>
+              <span>{{ quote.change_pct >= 0 ? '+' : '' }}{{ fmtPct(quote.change_pct) }}</span>
+            </div>
+          </div>
+          <div class="tags">
+            <span v-if="meta?.board" class="tag">{{ meta.board }}</span>
+            <span v-if="meta?.industry" class="tag ghost">{{ meta.industry }}</span>
+            <span v-if="meta?.is_st" class="tag st">ST</span>
+            <span v-if="isIndex" class="tag idx">指数</span>
+          </div>
         </div>
-        <div class="tags">
-          <span v-if="meta?.board" class="tg">{{ meta.board }}</span>
-          <span v-if="meta?.industry" class="tg">{{ meta.industry }}</span>
-          <span v-if="meta?.is_st" class="tg warn">ST</span>
+
+        <div class="stats">
+          <div v-for="s in statRows" :key="s.k" class="stat">
+            <span class="k">{{ s.k }}</span>
+            <span class="v tabular" :class="s.cls">{{ s.v }}</span>
+          </div>
         </div>
       </section>
 
-      <!-- ② 指标网格 -->
-      <section class="grid">
-        <div v-for="r in statRows" :key="r.k" class="cell">
-          <span class="ck">{{ r.k }}</span>
-          <span class="cv tabular" :class="r.cls">{{ r.v }}</span>
+      <!-- ② 图表卡：主图 + 可切换副图，与盘口/分布窄栏同屏对照 -->
+      <section class="chart-row">
+        <div class="chart-card">
+          <div class="chart-tabs">
+            <button class="ctab" :class="{ on: mode === 'minute' }" @click="switchMinute">分时</button>
+            <button class="ctab" :class="{ on: mode === 'kline' && period === '5min' }" @click="switchPeriod('5min')">5分</button>
+            <button class="ctab" :class="{ on: mode === 'kline' && period === '15min' }" @click="switchPeriod('15min')">15分</button>
+            <button class="ctab" :class="{ on: mode === 'kline' && period === '30min' }" @click="switchPeriod('30min')">30分</button>
+            <button class="ctab" :class="{ on: mode === 'kline' && period === '60min' }" @click="switchPeriod('60min')">60分</button>
+            <button class="ctab" :class="{ on: mode === 'kline' && period === 'day' }" @click="switchPeriod('day')">日K</button>
+          </div>
+          <div class="chart-tabs sub-tabs">
+            <span class="sub-label">副图</span>
+            <button class="ctab s" :class="{ on: sub === 'macd' }" @click="sub = 'macd'">MACD</button>
+            <button class="ctab s" :class="{ on: sub === 'volume' }" @click="sub = 'volume'">成交量</button>
+            <button class="ctab s" :class="{ on: sub === 'ratio' }" @click="sub = 'ratio'">量比</button>
+          </div>
+
+          <MiniChart
+            v-if="mode === 'minute'"
+            :minutes="minutes"
+            :prev-close="quote.prev_close ?? 0"
+            :sub="sub"
+            :height="214"
+          />
+          <MiniChart
+            v-else
+            mode="kline"
+            :bars="bars"
+            :sub="sub"
+            :height="214"
+          />
+        </div>
+
+        <!-- ③ 盘口位：个股五档 / 指数涨跌分布，同一格位 -->
+        <div class="side-card">
+          <template v-if="!isIndex">
+            <div v-if="depth" class="depth">
+              <div v-for="(a, i) in asksDesc" :key="'a' + i" class="drow">
+                <span class="dlabel">卖{{ asksDesc.length - i }}</span>
+                <span class="dprice up tabular">{{ fmtPrice(a.price) }}</span>
+                <span class="dvol tabular">{{ fmtHands(a.volume) }}</span>
+              </div>
+              <div class="dsep"></div>
+              <div v-for="(b, i) in bidsList" :key="'b' + i" class="drow">
+                <span class="dlabel">买{{ i + 1 }}</span>
+                <span class="dprice down tabular">{{ fmtPrice(b.price) }}</span>
+                <span class="dvol tabular">{{ fmtHands(b.volume) }}</span>
+              </div>
+            </div>
+            <div v-else class="empty">盘口加载中…</div>
+          </template>
+
+          <template v-else>
+            <div class="dist">
+              <div class="dnum up">{{ distribution.up }}</div>
+              <div class="dnum flat">{{ distribution.flat }}</div>
+              <div class="dnum down">{{ distribution.down }}</div>
+            </div>
+            <div class="dbar">
+              <i class="seg up" :style="{ width: distribution.upPct + '%' }"></i>
+              <i class="seg flat" :style="{ width: distribution.flatPct + '%' }"></i>
+              <i class="seg down" :style="{ width: distribution.downPct + '%' }"></i>
+            </div>
+            <div class="dlegend">
+              <span class="up">涨 {{ distribution.up }}</span>
+              <span class="flat">平 {{ distribution.flat }}</span>
+              <span class="down">跌 {{ distribution.down }}</span>
+            </div>
+          </template>
         </div>
       </section>
 
-      <!-- ③ 图表区：不套卡片、贴边占满 -->
-      <section class="chart-wrap">
-        <div class="tabs">
-          <button class="tab" :class="{ on: mode === 'minute' }" @click="mode = 'minute'">分时</button>
+      <!-- ④ 资料区：个股是题材与规则，指数是成分股及其涨跌 -->
+      <section v-if="meta?.hotword || meta?.theme || meta?.note" class="card info-card">
+        <h3>资料</h3>
+        <p v-if="meta?.hotword" class="line"><span class="k">题材</span>{{ meta.hotword }}</p>
+        <p v-if="meta?.theme" class="line"><span class="k">概念</span>{{ meta.theme }}</p>
+        <p v-if="meta?.note" class="line"><span class="k">说明</span>{{ meta.note }}</p>
+        <p v-if="!isIndex" class="line">
+          <span class="k">交易规则</span>
+          T+1，{{ meta?.lot_size ?? 100 }} 股起，涨停 {{ fmtPrice(meta?.limit_up ?? 0) }} / 跌停
+          {{ fmtPrice(meta?.limit_down ?? 0) }}
+        </p>
+      </section>
+
+      <section v-if="isIndex && members.length" class="card info-card">
+        <h3>成分股 <span class="n">共 {{ members.length }} 支，按代码排序</span></h3>
+        <div class="mtable">
           <button
-            v-for="p in ['5min', '15min', '30min', '60min']"
-            :key="p"
-            class="tab"
-            :class="{ on: mode === 'kline' && period === p }"
-            @click="((mode = 'kline'), (period = p))"
+            v-for="m in members"
+            :key="m.code"
+            class="mrow"
+            @click="router.push(`/stock/${m.code}`)"
           >
-            {{ p.replace('min', '分') }}
+            <span class="mname">
+              <b>{{ m.name }}</b>
+              <i>{{ m.code }}</i>
+            </span>
+            <span class="mprice tabular">{{ fmtPrice(m.price ?? 0) }}</span>
+            <span class="mpct tabular" :class="trendClass(m.change_pct ?? 0)">
+              {{ (m.change_pct ?? 0) >= 0 ? '+' : '' }}{{ fmtPct(m.change_pct ?? 0) }}
+            </span>
           </button>
-          <button class="tab" :class="{ on: mode === 'kline' && period === 'day' }"
-            @click="((mode = 'kline'), (period = 'day'))">
-            日K
-          </button>
-        </div>
-        <MiniChart :mode="mode" :minutes="minutes" :bars="bars" :sub="sub" :prev-close="quote.prev_close" />
-        <div class="sub-tabs">
-          <button class="stab" :class="{ on: sub === 'macd' }" @click="sub = 'macd'">MACD</button>
-          <button class="stab" :class="{ on: sub === 'volume' }" @click="sub = 'volume'">成交量</button>
-          <button class="stab" :class="{ on: sub === 'ratio' }" @click="sub = 'ratio'">量比</button>
         </div>
       </section>
 
-      <!-- ④ 五档盘口：同样不套卡片、不留左右边距 -->
-      <section class="depth-wrap">
-        <div class="depth-head">
-          <span>五档盘口</span>
-          <span class="dh-r tabular">委比 {{ fmtPct(0) }}</span>
-        </div>
-        <div class="drow sell" v-for="(d, i) in asksDesc" :key="`a${i}`">
-          <span class="dlabel">卖{{ 5 - i }}</span>
-          <span class="dprice tabular up">{{ fmtPrice(d.price) }}</span>
-          <span class="dvol tabular">{{ fmtHands(d.volume) }}</span>
-          <span class="dbar"><i class="up-bar" :style="{ width: `${(d.volume / maxDepthVol) * 100}%` }" /></span>
-        </div>
-        <div class="dsep" />
-        <div class="drow buy" v-for="(d, i) in bidsList" :key="`b${i}`">
-          <span class="dlabel">买{{ i + 1 }}</span>
-          <span class="dprice tabular down">{{ fmtPrice(d.price) }}</span>
-          <span class="dvol tabular">{{ fmtHands(d.volume) }}</span>
-          <span class="dbar"><i class="down-bar" :style="{ width: `${(d.volume / maxDepthVol) * 100}%` }" /></span>
-        </div>
-      </section>
-
-      <!-- ⑤ 资料 -->
-      <section class="info">
-        <div class="irow">
-          <span class="ik">涨停 / 跌停</span>
-          <span class="iv tabular">
-            <em class="up">{{ fmtPrice(quote.limit_up ?? 0) }}</em> /
-            <em class="down">{{ fmtPrice(quote.limit_down ?? 0) }}</em>
-          </span>
-        </div>
-        <div class="irow">
-          <span class="ik">振幅</span>
-          <span class="iv tabular">{{ (quote.amplitude ?? 0).toFixed(2) }}%</span>
-        </div>
-        <div v-if="meta?.theme" class="irow">
-          <span class="ik">题材</span>
-          <span class="iv">{{ meta.theme }}</span>
-        </div>
-        <p v-if="meta?.note" class="note">{{ meta.note }}</p>
+      <!-- ⑤ 交易条：仅个股，指数不可交易不摆无效按钮 -->
+      <section v-if="!isIndex" class="actions">
+        <button class="act-watch" :class="{ on: watching }" :disabled="watchBusy" @click="toggleWatch">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+            stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 3.6l2.6 5.4 5.9.8-4.3 4.2 1 5.9-5.2-2.8-5.2 2.8 1-5.9L3.5 9.8l5.9-.8z" />
+          </svg>
+          <span>{{ watching ? '已自选' : '加自选' }}</span>
+        </button>
+        <button class="btn buy" @click="openSheet('buy')">买入</button>
+        <button class="btn sell" @click="openSheet('sell')">卖出</button>
       </section>
     </template>
 
-    <!-- ⑥ 固定底栏：加自选 / 买入 / 卖出 -->
-    <nav class="actionbar">
-      <button class="act watch" :class="{ on: watching }" :disabled="watchBusy" @click="onWatchTap">
+    <div v-else-if="loading" class="loading">加载中…</div>
+
+    <!-- 指数不可交易：底栏只保留加自选 -->
+    <section v-if="isIndex && quote" class="actions">
+      <button class="act-watch wide" :class="{ on: watching }" :disabled="watchBusy" @click="toggleWatch">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
           stroke-linecap="round" stroke-linejoin="round">
           <path d="M12 3.6l2.6 5.4 5.9.8-4.3 4.2 1 5.9-5.2-2.8-5.2 2.8 1-5.9L3.5 9.8l5.9-.8z" />
         </svg>
-        <span>{{ watching ? '已自选' : '加自选' }}</span>
+        <span>{{ watching ? '取消自选' : '加自选' }}</span>
       </button>
-      <button class="act-trade buy" @click="openTrade('buy')">买入</button>
-      <button class="act-trade sell" @click="openTrade('sell')">卖出</button>
-    </nav>
-
-    <!-- 加自选：先选分组 -->
-    <transition name="fade">
-      <div v-if="watchSheet" class="mask" @click.self="watchSheet = false">
-        <div class="modal">
-          <h3 class="modal-title">添加到自选分组</h3>
-          <div class="glist">
-            <button
-              v-for="g in groups"
-              :key="g.id"
-              class="gitem"
-              :disabled="watchBusy"
-              @click="addToGroup(g.id)"
-            >
-              <span class="gname">{{ g.name }}</span>
-              <span class="gcnt">{{ g.count }} 只</span>
-            </button>
-          </div>
-          <div class="newg">
-            <input v-model="newGroupName" class="nginput" maxlength="12" placeholder="新建分组名" />
-            <button class="ngbtn" :disabled="watchBusy" @click="createGroupAndAdd">建并加入</button>
-          </div>
-          <p v-if="watchError" class="werr">{{ watchError }}</p>
-          <button class="mclose" @click="watchSheet = false">取消</button>
-        </div>
-      </div>
-    </transition>
+    </section>
 
     <TradeSheet
+      v-if="!isIndex && quote"
       v-model:show="sheetShow"
       :code="code"
       :side="sheetSide"
-      @submitted="() => { void loadQuote(); void loadDepth() }"
+      @submitted="onSubmitted"
     />
   </div>
 </template>
 
 <style scoped>
-.detail-page {
-  /* 给固定底栏留位置，避免最后一段内容被遮住 */
-  padding-bottom: calc(62px + var(--safe-bottom));
-}
-
-/* ---------- 顶栏 ---------- */
-.topbar {
-  position: sticky;
-  top: 0;
-  z-index: 20;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 46px;
-  padding: calc(var(--safe-top)) 12px 0;
+.page {
+  min-height: 100vh;
+  padding-bottom: 24px;
   background: var(--c-bg);
-  border-bottom: 1px solid var(--c-line);
-}
-.back {
-  width: 30px;
-  height: 30px;
-  display: grid;
-  place-items: center;
-  background: none;
-  border: none;
-  color: var(--c-text);
-  padding: 0;
-  cursor: pointer;
-}
-.back svg {
-  width: 21px;
-  height: 21px;
-}
-.tname {
-  font-size: 15px;
-  font-weight: 700;
-}
-.tcode {
-  font-size: 11px;
-  color: var(--c-text-3);
-  margin-left: auto;
 }
 
-/* ---------- 价格头 ---------- */
-.head {
-  padding: 12px 14px 10px;
+.err {
+  margin: 10px 14px;
+  padding: 10px 12px;
+  border-radius: var(--r-md);
+  background: rgba(255, 77, 79, 0.12);
+  color: var(--c-up);
+  font-size: 12px;
 }
-.price-line {
+
+/* ---------- ① 价格头 ---------- */
+.head {
+  padding: 14px 14px 10px;
+}
+
+.head-top {
   display: flex;
-  align-items: baseline;
+  align-items: flex-start;
+  justify-content: space-between;
   gap: 10px;
 }
+
 .price {
   font-size: 32px;
-  font-weight: 800;
-  letter-spacing: -0.5px;
-  line-height: 1.1;
-}
-.chg {
-  font-size: 13px;
   font-weight: 700;
-  display: inline-flex;
-  gap: 6px;
-}
-.chg em {
-  font-style: normal;
-}
-.tags {
-  display: flex;
-  gap: 6px;
-  margin-top: 8px;
-  flex-wrap: wrap;
-}
-.tg {
-  font-size: 10px;
-  color: var(--c-text-2);
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid var(--c-line);
-  border-radius: 5px;
-  padding: 2px 7px;
-}
-.tg.warn {
-  color: #ffb347;
-  border-color: rgba(255, 179, 71, 0.4);
+  line-height: 1.1;
+  letter-spacing: -0.5px;
 }
 
-/* ---------- 指标网格 ---------- */
-.grid {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 1px;
-  background: var(--c-line);
-  border-top: 1px solid var(--c-line);
-  border-bottom: 1px solid var(--c-line);
-}
-.cell {
+.delta {
   display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 3px;
-  padding: 9px 2px;
-  background: var(--c-card);
-}
-.ck {
-  font-size: 10px;
-  color: var(--c-text-3);
-}
-.cv {
+  gap: 10px;
+  margin-top: 4px;
   font-size: 13px;
   font-weight: 600;
 }
 
-/* ---------- 图表：贴边 ---------- */
-.chart-wrap {
-  padding: 0;
-  margin-top: 8px;
+.up {
+  color: var(--c-up);
 }
-.tabs {
+.down {
+  color: var(--c-down);
+}
+.flat {
+  color: var(--c-flat);
+}
+
+.tags {
   display: flex;
-  gap: 4px;
-  padding: 6px 10px;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+  max-width: 45%;
+}
+
+.tag {
+  font-size: 10px;
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: rgba(232, 56, 61, 0.14);
+  color: var(--c-brand);
+  white-space: nowrap;
+}
+
+.tag.ghost {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--c-text-2);
+}
+
+.tag.st {
+  background: rgba(255, 77, 79, 0.2);
+  color: var(--c-up);
+}
+
+.tag.idx {
+  background: rgba(47, 123, 255, 0.16);
+  color: var(--c-accent);
+}
+
+/* 指标网格：三列，指标名在上、数值在下，扫读时以数值为主 */
+.stats {
+  margin-top: 12px;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px 8px;
+  padding: 10px 12px;
+  border-radius: var(--r-md);
+  background: var(--c-card);
+}
+
+.stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.stat .k {
+  font-size: 10px;
+  color: var(--c-text-3);
+}
+
+.stat .v {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--c-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------- ② 图表 + ③ 盘口 ---------- */
+.chart-row {
+  display: flex;
+  gap: 0;
+  /* 图表贴边：卡片内边距会把曲线挤窄，这里去掉左右留白 */
+  padding: 0 0 10px;
+  align-items: stretch;
+}
+
+.card {
+  background: var(--c-card);
+  border-radius: var(--r-md);
+  border: 1px solid var(--c-line);
+}
+
+.chart-card {
+  flex: 3 1 0;
+  min-width: 0;
+  padding: 8px 0 6px;
+}
+
+.side-card {
+  flex: 1 1 0;
+  min-width: 108px;
+  max-width: 136px;
+  padding: 8px 8px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  border-left: 1px solid var(--c-line);
+}
+
+.chart-tabs {
+  display: flex;
+  gap: 3px;
+  padding: 0 2px 6px;
   overflow-x: auto;
   scrollbar-width: none;
 }
-.tabs::-webkit-scrollbar {
+.chart-tabs::-webkit-scrollbar {
   display: none;
 }
-.tab {
+
+.ctab {
   flex: 0 0 auto;
-  background: none;
-  border: none;
-  color: var(--c-text-3);
-  font-size: 12px;
-  padding: 5px 9px;
+  font-size: 10.5px;
+  padding: 3px 7px;
   border-radius: 7px;
-  cursor: pointer;
-  white-space: nowrap;
-}
-.tab.on {
-  color: var(--c-text);
-  background: rgba(255, 255, 255, 0.08);
-  font-weight: 600;
-}
-.sub-tabs {
-  display: flex;
-  gap: 4px;
-  padding: 4px 10px 8px;
-  border-top: 1px solid var(--c-line);
-}
-.stab {
-  background: none;
   border: none;
+  background: transparent;
   color: var(--c-text-3);
-  font-size: 11px;
-  padding: 4px 8px;
-  border-radius: 6px;
-  cursor: pointer;
-}
-.stab.on {
-  color: #e8b339;
-  background: rgba(232, 179, 57, 0.12);
+  font-family: inherit;
 }
 
-/* ---------- 五档 ---------- */
-.depth-wrap {
-  padding: 8px 0 10px;
-  margin-top: 8px;
-  border-top: 1px solid var(--c-line);
-}
-.depth-head {
-  display: flex;
-  justify-content: space-between;
-  padding: 2px 14px 6px;
-  font-size: 11px;
-  color: var(--c-text-3);
-}
-.dh-r {
-  color: var(--c-text-3);
-}
-.drow {
-  position: relative;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 5px 14px;
-  font-size: 12px;
-}
-.dlabel {
-  flex: 0 0 30px;
-  color: var(--c-text-3);
-  font-size: 11px;
-}
-.dprice {
-  flex: 0 0 60px;
+.ctab.on {
+  color: var(--c-brand);
+  background: rgba(232, 56, 61, 0.12);
   font-weight: 600;
 }
+
+.sub-tabs {
+  padding-bottom: 4px;
+  align-items: center;
+}
+
+.sub-label {
+  font-size: 10px;
+  color: var(--c-text-3);
+  padding-right: 2px;
+  flex: 0 0 auto;
+}
+
+.ctab.s {
+  font-size: 10px;
+  padding: 2px 5px;
+  border-radius: 6px;
+}
+
+/* 五档：一行一档，价格列定宽右对齐，量能列右对齐便于纵向比对 */
+.depth {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.drow {
+  display: grid;
+  grid-template-columns: 22px 1fr auto;
+  gap: 3px;
+  align-items: baseline;
+  font-size: 10.5px;
+}
+
+.dlabel {
+  color: var(--c-text-3);
+}
+
+.dprice {
+  text-align: right;
+  font-weight: 600;
+}
+
 .dvol {
-  flex: 1;
   text-align: right;
   color: var(--c-text-2);
+  min-width: 34px;
 }
-.dbar {
-  position: absolute;
-  left: 14px;
-  right: 14px;
-  bottom: 1px;
-  height: 2px;
-  background: transparent;
-  pointer-events: none;
-}
-.dbar i {
-  display: block;
-  height: 100%;
-  opacity: 0.35;
-}
-.up-bar {
-  background: var(--c-up);
-  margin-left: auto;
-}
-.down-bar {
-  background: var(--c-down);
-}
+
 .dsep {
   height: 1px;
-  background: var(--c-line);
-  margin: 4px 14px;
+  margin: 3px 0;
+  background: var(--c-line-strong);
 }
 
-/* ---------- 资料 ---------- */
-.info {
-  margin-top: 8px;
-  border-top: 1px solid var(--c-line);
-  padding: 8px 14px 14px;
-}
-.irow {
-  display: flex;
-  justify-content: space-between;
-  padding: 6px 0;
-  font-size: 12px;
-  border-bottom: 1px solid var(--c-line);
-}
-.irow:last-child {
-  border-bottom: none;
-}
-.ik {
-  color: var(--c-text-3);
-}
-.iv em {
-  font-style: normal;
-}
-.note {
-  margin: 8px 0 0;
+.empty {
   font-size: 11px;
   color: var(--c-text-3);
-  line-height: 1.7;
+  text-align: center;
+  padding: 18px 0;
 }
 
-/* ---------- 固定底栏 ---------- */
-.actionbar {
+/* 指数涨跌分布：数字在上，比例条在中，图例在下 —— 与五档占同一格位 */
+.dist {
+  display: flex;
+  justify-content: space-around;
+  align-items: baseline;
+  margin-bottom: 6px;
+}
+
+.dnum {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--c-text);
+}
+
+.dnum.up {
+  color: var(--c-up);
+}
+.dnum.down {
+  color: var(--c-down);
+}
+.dnum.flat {
+  color: var(--c-flat);
+}
+
+.dbar {
+  display: flex;
+  height: 6px;
+  border-radius: 4px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.dbar .seg {
+  display: block;
+  height: 100%;
+}
+
+.dbar .seg.up {
+  background: var(--c-up);
+}
+.dbar .seg.down {
+  background: var(--c-down);
+}
+.dbar .seg.flat {
+  background: var(--c-flat);
+}
+
+.dlegend {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 6px;
+  font-size: 9.5px;
+  color: var(--c-text-3);
+}
+
+.dlegend .up {
+  color: var(--c-up);
+}
+.dlegend .down {
+  color: var(--c-down);
+}
+
+/* ---------- ④ 资料 / 成分 ---------- */
+.info-card {
+  margin: 0 14px 10px;
+  padding: 12px;
+}
+
+.info-card h3 {
+  margin: 0 0 8px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--c-text);
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.info-card h3 .n {
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--c-text-3);
+}
+
+.line {
+  margin: 0 0 6px;
+  font-size: 11.5px;
+  color: var(--c-text-2);
+  line-height: 1.6;
+}
+
+.line .k {
+  display: inline-block;
+  min-width: 52px;
+  color: var(--c-text-3);
+  font-size: 10.5px;
+}
+
+.mtable {
+  display: flex;
+  flex-direction: column;
+}
+
+.mrow {
+  display: grid;
+  grid-template-columns: 1fr auto 66px;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 0;
+  border: none;
+  border-bottom: 1px solid var(--c-line);
+  background: transparent;
+  font-family: inherit;
+  text-align: left;
+}
+
+.mrow:last-child {
+  border-bottom: none;
+}
+
+.mname {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.mname b {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--c-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mname i {
+  font-size: 9.5px;
+  font-style: normal;
+  color: var(--c-text-3);
+}
+
+.mprice {
+  font-size: 12px;
+  color: var(--c-text);
+}
+
+.mpct {
+  font-size: 12px;
+  font-weight: 600;
+  text-align: right;
+}
+
+/* ---------- ⑤ 交易条 ---------- */
+.actions {
+  /* 固定在屏幕底部：详情页很长，sticky 会被后面的内容顶走 */
   position: fixed;
   left: 0;
   right: 0;
   bottom: 0;
-  z-index: 40;
+  z-index: 30;
   display: flex;
-  align-items: center;
   gap: 8px;
-  padding: 8px 12px calc(8px + var(--safe-bottom));
-  background: var(--c-bg-elevated);
+  padding: 10px 14px calc(10px + env(safe-area-inset-bottom));
+  background: var(--c-bg);
   border-top: 1px solid var(--c-line);
 }
-.act.watch {
+
+/* 底栏里的「加自选」：图标 + 文字，纵向排布，占用宽度比一个文字按钮更省 */
+.act-watch {
   flex: 0 0 auto;
+  width: 54px;
   display: flex;
   flex-direction: column;
   align-items: center;
+  justify-content: center;
   gap: 2px;
-  width: 52px;
-  background: none;
   border: none;
+  background: none;
   color: var(--c-text-3);
   font-size: 10px;
-  padding: 2px 0;
+  font-family: inherit;
   cursor: pointer;
 }
-.act.watch svg {
+.act-watch svg {
   width: 20px;
   height: 20px;
 }
-.act.watch.on {
+.act-watch.on {
   color: #e8b339;
 }
-.act-trade {
-  flex: 1;
-  height: 40px;
-  border: none;
-  border-radius: 10px;
-  font-size: 15px;
-  font-weight: 700;
-  color: #fff;
-  cursor: pointer;
-}
-.act-trade.buy {
-  background: linear-gradient(135deg, #ff5c5e, #d92b2f);
-}
-.act-trade.sell {
-  background: linear-gradient(135deg, #1cc477, #0a8f52);
-}
-
-/* ---------- 加自选分组弹窗 ---------- */
-.mask {
-  position: fixed;
-  inset: 0;
-  z-index: 80;
-  background: rgba(0, 0, 0, 0.6);
-  display: flex;
-  align-items: flex-end;
-}
-.modal {
+.act-watch.wide {
   width: 100%;
-  background: var(--c-bg-elevated);
-  border-radius: var(--r-lg) var(--r-lg) 0 0;
-  padding: 16px 16px calc(12px + var(--safe-bottom));
-  border-top: 1px solid var(--c-line);
-}
-.modal-title {
-  margin: 0 0 12px;
-  font-size: 15px;
-  font-weight: 700;
-}
-.glist {
-  max-height: 42vh;
-  overflow-y: auto;
-}
-.gitem {
-  width: 100%;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  background: var(--c-card);
-  border: 1px solid var(--c-line);
-  border-radius: 10px;
-  padding: 11px 12px;
-  margin-bottom: 8px;
-  color: var(--c-text);
-  font-size: 13px;
-  cursor: pointer;
-}
-.gname {
-  font-weight: 600;
-}
-.gcnt {
-  font-size: 11px;
-  color: var(--c-text-3);
-}
-.newg {
-  display: flex;
-  gap: 8px;
-  margin-top: 4px;
-}
-.nginput {
-  flex: 1;
-  min-width: 0;
-  background: var(--c-card);
+  flex-direction: row;
+  gap: 6px;
+  height: 42px;
   border: 1px solid var(--c-line-strong);
-  border-radius: 10px;
-  color: var(--c-text);
-  font-size: 13px;
-  padding: 10px 12px;
-  outline: none;
-}
-.ngbtn {
-  flex: 0 0 auto;
-  background: var(--c-brand);
-  border: none;
-  border-radius: 10px;
-  color: #fff;
-  font-size: 13px;
-  font-weight: 600;
-  padding: 0 14px;
-  cursor: pointer;
-}
-.werr {
-  margin: 8px 0 0;
-  font-size: 12px;
-  color: #ff8b8d;
-}
-.mclose {
-  width: 100%;
-  margin-top: 10px;
+  border-radius: var(--r-md);
   background: var(--c-card);
-  border: 1px solid var(--c-line);
-  border-radius: 10px;
   color: var(--c-text-2);
   font-size: 14px;
-  padding: 11px 0;
-  cursor: pointer;
+  font-weight: 600;
 }
-.fade-enter-active,
-.fade-leave-active {
-  transition: opacity 0.18s ease;
+.act-watch.wide.on {
+  color: #e8b339;
+  border-color: rgba(232, 179, 57, 0.45);
 }
-.fade-enter-from,
-.fade-leave-to {
-  opacity: 0;
+
+.btn {
+  flex: 1;
+  height: 42px;
+  border: none;
+  border-radius: var(--r-md);
+  font-size: 14px;
+  font-weight: 600;
+  font-family: inherit;
+  color: #fff;
+}
+
+.btn.buy {
+  background: var(--c-up);
+}
+
+.btn.sell {
+  background: var(--c-down);
+}
+
+.watch-btn {
+  border: 1px solid var(--c-line-strong);
+  background: transparent;
+  color: var(--c-text-2);
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-family: inherit;
+}
+
+.watch-btn.on {
+  border-color: rgba(232, 56, 61, 0.5);
+  color: var(--c-brand);
+  background: rgba(232, 56, 61, 0.1);
+}
+
+.loading {
+  padding: 40px 0;
+  text-align: center;
+  font-size: 12px;
+  color: var(--c-text-3);
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* 页面底部留白：固定底栏会盖住最后一段内容 */
+.page {
+  padding-bottom: calc(72px + env(safe-area-inset-bottom));
 }
 </style>

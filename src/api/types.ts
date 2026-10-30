@@ -36,7 +36,7 @@ export interface Quote {
   change_pct: number
   amplitude: number
   turnover_rate: number
-  /** 量比：当前每分钟均量 ÷ 过去 5 日每分钟均量（服务端算好下发） */
+  /** 量比：当前每分钟均量 ÷ 过去 5 日每分钟均量，服务端算好下发 */
   volume_ratio?: number
   limit_up?: number
   limit_down?: number
@@ -265,10 +265,9 @@ export interface AccountSummary {
     market_value: number
     total_asset: number
     credit_limit: number
-    realized_pnl: number
     fee_paid: number
     day_pnl: number
-    /** 浮动盈亏：持仓成本对最新价，与「当日盈亏」「已实现」是三件不同的事 */
+    /** 浮动盈亏：持仓成本对最新价。与「当日盈亏」是两件不同的事 */
     floating_pnl?: number
     floating_pct?: number
   }
