@@ -271,7 +271,7 @@ jobs:
           # 重跑时替换旧包而不是堆积多个同名附件（旧资产会被删除后重新上传）
           overwrite_files: true
           body: |
-            ## Stland 股岛 v${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || inputs.version }}
+            ## Stland 股岛 ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('v{0}', inputs.version) }}
 
             Android arm64 安装包，文件名固定 `Stland-arm64.apk`。
 
