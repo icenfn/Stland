@@ -17,10 +17,13 @@ import {
   NDialogProvider,
 } from 'naive-ui'
 import { useImmersiveBar } from './composables/useImmersive'
+import { useBackExit } from './composables/useBackExit'
 import TabBar from './components/TabBar.vue'
 import NaiveBridge from './components/NaiveBridge.vue'
 
 useImmersiveBar()
+// 系统返回键统一接管：底栏页 → 回首页 → 提示再按一次 → 退出应用
+useBackExit()
 
 const route = useRoute()
 const showTabBar = computed(() => Boolean(route.meta.tab))

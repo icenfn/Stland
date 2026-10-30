@@ -5,11 +5,13 @@
  * 本轮针对「一直加载中 / 显示连接中 / 全是 0」做了三处结构性修正：
  *  1) 造成功率数据为空的根因是请求未通过服务端签名校验（见 config/app.config.json），
  *     修好后这里不再需要「加载中」兜底，改为明确的三种状态：骨架 / 数据 / 错误重试；
- *  2) 顶部胶囊不再笼统显示「连接中」，而是如实反映当前通道：推送/轮询/离线，
- *     用户能一眼看出是没连上还是没数据；
- *  3) 买入/卖出不再跳整页，直接在底部抽屉里完成，保留用户对当前榜单的上下文。
+ *  2) 买入/卖出不再跳整页，直接在底部抽屉里完成，保留用户对当前榜单的上下文；
+ *  3) 应用栏（品牌 / 行情通道 / 交易时段）移到首页容器，两个滑动面板共用一条；
+ *     若留在这里，横向滑到行情时品牌与状态会跟着一起滑走，还会和容器顶栏叠成两层；
+ *  4) 行情轮询由首页容器统一启停。两个面板常驻挂载，各自 start/stop 会互相掐断：
+ *     后挂载的把前一个关掉，先卸载的又把还在用的停掉。
  */
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useMarket } from '@/stores/market'
 import { fmtAmount, fmtPct, fmtPrice, trendClass } from '@/utils/format'
@@ -30,37 +32,16 @@ const rankList = computed(() => {
 const indexMinutes = computed(() => state.overview?.index_minutes ?? [])
 const totalAmount = computed(() => state.overview?.stats.total_amount ?? 0)
 
-/** 通道状态 → 文案与配色：区分「没连上」与「连上但没数据」 */
-const feedLabel = computed(() => {
-  if (state.feed === 'socket') return '实时'
-  if (state.feed === 'polling') return '轮询'
-  if (state.feed === 'offline') return '离线'
-  return '连接中'
-})
-
 /** 指数也有代码，点击进入指数详情（与个股同一套入口语义） */
 function openIndex(code?: string) {
   if (!code) return
   void router.push(`/index/${code}`)
 }
 
-onMounted(() => market.start(1500))
-onBeforeUnmount(() => market.stop())
 </script>
 
 <template>
   <div class="page home">
-    <header class="app-bar">
-      <div class="app-bar__inner">
-        <div class="brand">股岛</div>
-        <div class="grow" />
-        <span class="feed-chip" :class="state.feed">{{ feedLabel }}</span>
-        <span class="session-chip" :class="{ open: session?.can_trade }">
-          {{ session?.label ?? '休市' }}
-        </span>
-      </div>
-    </header>
-
     <!-- 指数卡：指数也有代码，点进去看详情（与个股同一套入口语义） -->
     <section class="px sect">
       <div class="card index-card" @click="openIndex(index?.code)">
@@ -130,44 +111,9 @@ onBeforeUnmount(() => market.stop())
 </template>
 
 <style scoped>
-.brand {
-  font-size: 18px;
-  font-weight: 800;
-  letter-spacing: 2px;
-  background: linear-gradient(120deg, #ff6b6d, #ffb45c);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-}
 .sect {
   padding-top: 10px;
 }
-.feed-chip,
-.session-chip {
-  font-size: 11px;
-  padding: 4px 9px;
-  border-radius: 20px;
-  background: rgba(255, 255, 255, 0.08);
-  color: var(--c-text-2);
-  margin-left: 6px;
-}
-.feed-chip.socket {
-  background: rgba(18, 183, 106, 0.16);
-  color: #4ade9b;
-}
-.feed-chip.polling {
-  background: rgba(240, 160, 32, 0.16);
-  color: #f5c26b;
-}
-.feed-chip.offline {
-  background: rgba(255, 77, 79, 0.16);
-  color: #ff8b8d;
-}
-.session-chip.open {
-  background: rgba(255, 77, 79, 0.16);
-  color: #ff8b8d;
-}
-
 .index-card {
   background: linear-gradient(150deg, #1d2837, #151d29);
 }

@@ -1,6 +1,9 @@
 <script setup lang="ts">
 /**
- * 自选股：按分组管理，一屏看到全部自选的最新涨跌。
+ * 自选：底栏一级页面，按分组管理，一屏看到全部自选的最新涨跌。
+ *
+ * 从首页滑动面板移出：自选是账户数据（未登录看不到），
+ * 和公开行情不是一类；混在滑动面板里会出现「滑到第三屏才提示要登录」。
  *
  * 信息架构（本版调整）：
  *  · 顶部分组条只做「切换」—— 原来把「＋ 分组」的输入框塞在横向滚动条里，
@@ -170,7 +173,7 @@ function openDetail(item: WatchItem) {
   router.push(`/stock/${item.code}`)
 }
 
-/** 去行情面板挑股票（/market 已是首页里的面板，不再跳整页） */
+/** 去首页的行情面板挑股票 */
 function goMarket() {
   router.push('/market')
 }
@@ -188,7 +191,7 @@ onMounted(refresh)
     </AppBar>
 
     <!-- 分组条：只做切换 -->
-    <div class="group-bar">
+    <div class="group-bar" data-hscroll>
       <button
         v-for="g in groups"
         :key="g.id"
