@@ -8,13 +8,11 @@ import type { RouteRecordRaw } from 'vue-router'
  * 1) 个股与指数各自独立成页（StockDetailView / IndexDetailView）。
  *    上一版两者共用一个组件，模板里按路由名分叉，改个股容易碰坏指数。
  *
- * 2) 首页只承载「看盘」：概览 / 行情两个滑动面板，共用一条应用栏。
+ * 2) 首页改为 tab & swiper：概览 / 行情 / 自选成为首页里的三个滑动面板，
  *    不再靠路由切换（切路由等于整页重挂载，滚动位置丢失、行情轮询被销毁重建）。
- *    /market 保留为深链入口，渲染同一个首页并定位到「行情」面板。
+ *    /market、/watch 仍保留为深链入口，渲染同一个首页并定位到对应面板。
  *
- * 3) 自选、交易、我的各自独立成页，对应底栏另外三个入口。
- *    自选从滑动面板移出：它是账户数据，未登录看不到，不该混在公开行情里。
- *    旧地址 /assets 重定向到 /trade，旧书签不会 404。
+ * 3) 「资产」与「我的」合并为「交易」页；旧地址做重定向，旧书签不会 404。
  */
 export const routes: RouteRecordRaw[] = [
   {
@@ -37,10 +35,11 @@ export const routes: RouteRecordRaw[] = [
     meta: { title: '行情', tab: 'home', panel: 1 },
   },
   {
+    // 深链入口：进首页并停在「自选」面板
     path: '/watch',
     name: 'watch',
-    component: () => import('./views/WatchView.vue'),
-    meta: { title: '自选', tab: 'watch' },
+    component: () => import('./views/HomeView.vue'),
+    meta: { title: '自选', tab: 'home', panel: 2 },
   },
   {
     path: '/stock/:code',
@@ -67,14 +66,9 @@ export const routes: RouteRecordRaw[] = [
     // 独立路由：不挂底部 Tab，从交易页进入后可用返回键回到来源页
     meta: { title: '委托与成交' },
   },
-  {
-    path: '/profile',
-    name: 'profile',
-    component: () => import('./views/ProfileView.vue'),
-    meta: { title: '我的', tab: 'profile' },
-  },
-  // 「资产」已并入「交易」，保留旧地址做重定向
+  // 「资产」「我的」已合并为「交易」，保留旧地址做重定向
   { path: '/assets', redirect: '/trade' },
+  { path: '/profile', redirect: '/trade' },
   {
     path: '/risk',
     name: 'risk',

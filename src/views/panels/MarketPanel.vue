@@ -44,8 +44,8 @@ watch([industry, sort], applyFilter)
 
 const list = computed(() => state.quotes)
 
-// 行情轮询由首页容器统一启停：两个面板常驻，各自 start/stop 会互相掐断
 onMounted(async () => {
+  market.start(1800)
   try {
     const res = await marketApi.industries()
     industries.value = res.items
@@ -60,6 +60,7 @@ onMounted(async () => {
   }
 })
 onBeforeUnmount(() => {
+  market.stop()
   window.clearTimeout(debounce)
 })
 </script>
