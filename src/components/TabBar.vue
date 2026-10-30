@@ -1,22 +1,17 @@
 <script setup lang="ts">
 /**
- * 底部导航：三个主入口（首页 / 交易）。
+ * 底部导航：首页 / 行情 / 自选 / 交易 / 我的（五个主页面）。
  *
- * 设计取舍（相对上一版的收敛）：
- *  · 「行情」「自选」不再是独立的底部 Tab —— 它们已成为首页里的左右滑动面板，
- *    再从底栏放两个入口，等于同一件事有两个入口，底栏也被挤成五个格子；
- *  · 「资产」「我的」合并为「交易」—— 两个页面里一大半内容是重复的（持仓、委托入口、
- *    账户设置），分开放让用户在两页之间来回跳；
- *  · 「委托」仍不作为 Tab：委托/成交是「查看历史」的低频动作，独立路由（/orders），
- *    带返回键回到来源页面。
+ * 这五个页面不是五条路由切换，而是同一个 swiper 里的五屏，所以这里点一下
+ * 既要把轨道滑过去，也要把地址对齐（router.replace）。
+ * 用 replace 不 push：用户不希望点十次格子之后要按十次返回才退得出去；
+ * 返回键的去向由 useBackExit 统一接管（回首页 → 提示 → 退出）。
  */
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { useAuth } from '@/stores/auth'
 
 const route = useRoute()
 const router = useRouter()
-const { isInstitution } = useAuth()
 
 interface TabItem {
   name: string
@@ -27,60 +22,62 @@ interface TabItem {
 
 const tabs: TabItem[] = [
   { name: 'home', label: '首页', path: '/', icon: 'home' },
+  { name: 'market', label: '行情', path: '/market', icon: 'chart' },
+  { name: 'watch', label: '自选', path: '/watch', icon: 'star' },
   { name: 'trade', label: '交易', path: '/trade', icon: 'wallet' },
+  { name: 'profile', label: '我的', path: '/profile', icon: 'user' },
 ]
 
-const activeName = computed(() => {
-  // /market、/watch 是首页的深链面板，底栏应继续高亮「首页」
-  const tab = route.meta.tab
-  if (tab) return String(tab)
-  const name = String(route.name ?? '')
-  if (name === 'market' || name === 'watch') return 'home'
-  return name || 'home'
-})
+const activeName = computed(() => String(route.meta.tab ?? 'home'))
 
+/**
+ * 地址变化即切屏。
+ * 这里不直接操作 swiper 实例：外壳监听地址（meta.panel）自己会滑过去，
+ * 底栏与滑动两条入口最后都收敛到「地址」这一个状态源，不会出现两边各记一份、越切越乱。
+ */
 function go(item: TabItem) {
-  if (route.path !== item.path) void router.push(item.path)
+  if (route.path === item.path) return
+  void router.replace(item.path)
 }
 
+/** 线性图标：与全局 1.7 描边、22px 尺寸一致 */
 const icons: Record<string, string> = {
-  home: 'M3 10.5 12 3l9 7.5V21a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1z',
-  chart: 'M4 20V6M4 20h16M8 20v-6M12 20V9M16 20v-9',
-  star: 'M12 3.6l2.6 5.4 5.9.8-4.3 4.2 1 5.9-5.2-2.8-5.2 2.8 1-5.9L3.5 9.8l5.9-.8z',
-  wallet: 'M3 8a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v1H5a2 2 0 0 0 0 4h14v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z',
-  user: 'M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8M4 21c0-3.9 3.6-7 8-7s8 3.1 8 7',
+  home: 'M3.5 10.6 12 3.8l8.5 6.8V20a1 1 0 0 1-1 1h-4.6v-6.2H9.1V21H4.5a1 1 0 0 1-1-1z',
+  chart: 'M4 20V4M4 20h16M7.5 16v-4M11.5 16V8M15.5 16v-6M19.5 16v-9',
+  star: 'M12 3.8l2.55 5.35 5.85.78-4.28 4.1 1.05 5.87L12 17.1l-5.17 2.8 1.05-5.87-4.28-4.1 5.85-.78z',
+  wallet: 'M3.5 8.2a2 2 0 0 1 2-2h13a2 2 0 0 1 2 2v1.3H6.2a2 2 0 0 0 0 4h14.3v2.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z',
+  user: 'M12 12.2a4.1 4.1 0 1 0 0-8.2 4.1 4.1 0 0 0 0 8.2M4.4 21c0-4 3.5-7.1 7.6-7.1s7.6 3.1 7.6 7.1',
 }
 </script>
 
 <template>
-  <nav class="app-tabbar bottom-bar">
+  <nav class="tabbar">
     <button
       v-for="item in tabs"
       :key="item.name"
       class="tab"
       :class="{ active: activeName === item.name }"
+      :aria-label="item.label"
       @click="go(item)"
     >
-      <svg viewBox="0 0 24 24" class="ico" fill="none" stroke="currentColor" stroke-width="1.7"
-        stroke-linecap="round" stroke-linejoin="round">
+      <svg
+        class="ico"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="1.7"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      >
         <path :d="icons[item.icon]" />
       </svg>
       <span class="lbl">{{ item.label }}</span>
-    </button>
-
-    <button v-if="isInstitution" class="tab" :class="{ active: route.name === 'institution' }"
-      @click="router.push('/institution')">
-      <svg viewBox="0 0 24 24" class="ico" fill="none" stroke="currentColor" stroke-width="1.7"
-        stroke-linecap="round" stroke-linejoin="round">
-        <path d="M4 20h16M6 20V9l6-5 6 5v11M10 20v-5h4v5" />
-      </svg>
-      <span class="lbl">交易台</span>
     </button>
   </nav>
 </template>
 
 <style scoped>
-.app-tabbar {
+.tabbar {
   position: fixed;
   left: 0;
   right: 0;
@@ -90,7 +87,9 @@ const icons: Record<string, string> = {
   align-items: stretch;
   height: calc(var(--h-tabbar) + var(--safe-bottom));
   padding-bottom: var(--safe-bottom);
-  transition: transform 0.2s ease;
+  background: rgba(14, 20, 29, 0.96);
+  backdrop-filter: saturate(160%) blur(16px);
+  border-top: 1px solid var(--c-line);
 }
 
 .tab {
@@ -103,6 +102,7 @@ const icons: Record<string, string> = {
   background: none;
   border: none;
   color: var(--c-text-3);
+  font-family: inherit;
   font-size: 10px;
   padding: 6px 0;
   cursor: pointer;

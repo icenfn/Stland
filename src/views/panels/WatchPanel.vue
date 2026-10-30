@@ -19,7 +19,6 @@ import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { watchApi } from '@/api'
 import type { WatchGroup, WatchItem } from '@/api/types'
-import AppBar from '@/components/AppBar.vue'
 import { fmtAmount, fmtPct, fmtPrice, trendClass } from '@/utils/format'
 
 const router = useRouter()
@@ -180,15 +179,16 @@ onMounted(refresh)
 
 <template>
   <div class="page">
-    <AppBar title="自选股">
-      <template #actions>
-        <button class="mini-btn" @click="refresh">刷新</button>
-        <button class="mini-btn" @click="openManage">分组</button>
-      </template>
-    </AppBar>
+    <!-- 顶栏由外壳统一提供；这里只留本页自己的两个动作 -->
+    <div class="self-bar">
+      <span class="self-title">自选</span>
+      <span class="grow" />
+      <button class="mini-btn" @click="refresh">刷新</button>
+      <button class="mini-btn" @click="openManage">分组</button>
+    </div>
 
     <!-- 分组条：只做切换 -->
-    <div class="group-bar">
+    <div class="group-bar" data-hscroll>
       <button
         v-for="g in groups"
         :key="g.id"
@@ -294,6 +294,16 @@ onMounted(refresh)
 </template>
 
 <style scoped>
+.self-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px 0;
+}
+.self-title {
+  font-size: 15px;
+  font-weight: 700;
+}
 .mini-btn {
   background: rgba(255, 255, 255, 0.08);
   border: 1px solid var(--c-line);

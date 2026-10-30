@@ -9,7 +9,7 @@
  *     用户能一眼看出是没连上还是没数据；
  *  3) 买入/卖出不再跳整页，直接在底部抽屉里完成，保留用户对当前榜单的上下文。
  */
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useMarket } from '@/stores/market'
 import { fmtAmount, fmtPct, fmtPrice, trendClass } from '@/utils/format'
@@ -18,7 +18,7 @@ import QuoteRow from '@/components/QuoteRow.vue'
 
 const router = useRouter()
 const market = useMarket()
-const { state, session, index, upCount, downCount, ready } = market
+const { state, index, upCount, downCount, ready } = market
 
 const rankTab = ref<'gainers' | 'losers' | 'active'>('gainers')
 const rankList = computed(() => {
@@ -30,37 +30,16 @@ const rankList = computed(() => {
 const indexMinutes = computed(() => state.overview?.index_minutes ?? [])
 const totalAmount = computed(() => state.overview?.stats.total_amount ?? 0)
 
-/** 通道状态 → 文案与配色：区分「没连上」与「连上但没数据」 */
-const feedLabel = computed(() => {
-  if (state.feed === 'socket') return '实时'
-  if (state.feed === 'polling') return '轮询'
-  if (state.feed === 'offline') return '离线'
-  return '连接中'
-})
-
 /** 指数也有代码，点击进入指数详情（与个股同一套入口语义） */
 function openIndex(code?: string) {
   if (!code) return
   void router.push(`/index/${code}`)
 }
 
-onMounted(() => market.start(1500))
-onBeforeUnmount(() => market.stop())
 </script>
 
 <template>
   <div class="page home">
-    <header class="app-bar">
-      <div class="app-bar__inner">
-        <div class="brand">股岛</div>
-        <div class="grow" />
-        <span class="feed-chip" :class="state.feed">{{ feedLabel }}</span>
-        <span class="session-chip" :class="{ open: session?.can_trade }">
-          {{ session?.label ?? '休市' }}
-        </span>
-      </div>
-    </header>
-
     <!-- 指数卡：指数也有代码，点进去看详情（与个股同一套入口语义） -->
     <section class="px sect">
       <div class="card index-card" @click="openIndex(index?.code)">
@@ -130,40 +109,14 @@ onBeforeUnmount(() => market.stop())
 </template>
 
 <style scoped>
-.brand {
-  font-size: 18px;
-  font-weight: 800;
-  letter-spacing: 2px;
-  background: linear-gradient(120deg, #ff6b6d, #ffb45c);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-}
 .sect {
   padding-top: 10px;
-}
-.feed-chip,
-.session-chip {
-  font-size: 11px;
-  padding: 4px 9px;
-  border-radius: 20px;
-  background: rgba(255, 255, 255, 0.08);
-  color: var(--c-text-2);
-  margin-left: 6px;
 }
 .feed-chip.socket {
   background: rgba(18, 183, 106, 0.16);
   color: #4ade9b;
 }
-.feed-chip.polling {
-  background: rgba(240, 160, 32, 0.16);
-  color: #f5c26b;
-}
 .feed-chip.offline {
-  background: rgba(255, 77, 79, 0.16);
-  color: #ff8b8d;
-}
-.session-chip.open {
   background: rgba(255, 77, 79, 0.16);
   color: #ff8b8d;
 }

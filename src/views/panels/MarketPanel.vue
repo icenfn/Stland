@@ -45,7 +45,6 @@ watch([industry, sort], applyFilter)
 const list = computed(() => state.quotes)
 
 onMounted(async () => {
-  market.start(1800)
   try {
     const res = await marketApi.industries()
     industries.value = res.items
@@ -60,27 +59,14 @@ onMounted(async () => {
   }
 })
 onBeforeUnmount(() => {
-  market.stop()
   window.clearTimeout(debounce)
 })
 </script>
 
 <template>
   <div class="page">
-    <header class="app-bar">
-      <div class="app-bar__inner" style="gap: 10px">
-        <div class="search">
-          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="11" cy="11" r="7" />
-            <path d="m20 20-3.5-3.5" stroke-linecap="round" />
-          </svg>
-          <input v-model="keyword" class="search-input" placeholder="搜索名称 / 代码 / 热词" />
-        </div>
-      </div>
-    </header>
-
     <!-- 指数：与个股同一套浏览语义，点击进入指数详情 -->
-    <div v-if="indices.length" class="idx-strip">
+    <div v-if="indices.length" class="idx-strip" data-hscroll>
       <button
         v-for="idx in indices"
         :key="idx.code"
@@ -98,7 +84,7 @@ onBeforeUnmount(() => {
     </div>
 
     <!-- 板块筛选 -->
-    <div class="chips">
+    <div class="chips" data-hscroll>
       <button class="chip" :class="{ on: industry === '' }" @click="industry = ''">全部</button>
       <button v-for="it in industries" :key="it.industry" class="chip"
         :class="{ on: industry === it.industry }" @click="industry = it.industry">

@@ -17,9 +17,11 @@
  *   ④ 资料区    题材/板块/简介；指数额外列出成分股及其涨跌
  *   ⑤ 交易条    仅个股出现（指数不可交易，不摆一个点了会报错的按钮）
  *
- * 版式参照东方财富、天府小诸葛的通行做法：价格与涨跌永远是视觉焦点，
- * 指标网格紧跟在价格下面（一眼扫完当日全貌），图表占满宽度单独成块，
- * 盘口/分布作为窄栏与图表同屏对照，最后才是资料与成分这类「要才会看」的内容。
+ * 版式说明：价格与涨跌是视觉焦点，指标网格紧跟在价格下面。
+ * 本轮两处调整：
+ *  · 图表占满宽度单独成块，涨跌分布移到图表下方 —— 上下关系比左右并排更好读，
+ *    并排时窄栏把 K 线挤得只剩一半宽度；
+ *  · 撤掉「资料」卡：里面对指数没有任何有效信息（题材/概念/说明都是个股字段）。
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -27,7 +29,6 @@ import { useIntervalFn } from '@vueuse/core'
 import { marketApi, watchApi } from '@/api'
 import type {
   BarItem,
-  Depth,
   DetailQuote,
   IndexMember,
   IndexQuote,
@@ -44,16 +45,14 @@ const route = useRoute()
 const router = useRouter()
 
 /**
- * 同一个组件同时服务 /stock/:code 与 /index/:code。
- * 用路由名判断身份，而不是猜代码前缀 —— 指数的代码规则以后可能变，
- * 但「从哪个入口进来」是确定的。
+ * 指数详情页（/index/:code）。个股已有独立页面，这里身份固定为指数，
+ * 不再靠路由名在同一个模板里分叉 —— 改个股时不会碰坏指数。
  */
 const isIndex = computed(() => true)
 const code = computed(() => String(route.params.code ?? ''))
 
 const quote = ref<DetailQuote | null>(null)
 const meta = ref<StockMeta | null>(null)
-const depth = ref<Depth | null>(null)
 const members = ref<IndexMember[]>([])
 const minutes = ref<MinutePoint[]>([])
 const bars = ref<BarItem[]>([])
@@ -110,17 +109,6 @@ const distribution = computed(() => {
   const total = Math.max(1, up + down + flat)
   return { up, down, flat, upPct: (up / total) * 100, flatPct: (flat / total) * 100, downPct: (down / total) * 100 }
 })
-
-/** 五档：卖5→卖1 从上到下，买1→买5 紧随其后 —— 与交易所行情软件的排列一致 */
-const asksDesc = computed(() => [...(depth.value?.asks ?? [])].reverse())
-const bidsList = computed(() => depth.value?.bids ?? [])
-
-/** 深度里的量以「手」为单位展示更符合看盘习惯 */
-function fmtHands(v: number) {
-  if (!v) return '—'
-  if (v >= 10000) return `${(v / 10000).toFixed(2)}万`
-  return String(Math.round(v))
-}
 
 /**
  * 把个股报价与指数报价统一成 DetailQuote。
@@ -185,15 +173,6 @@ async function loadQuote() {
     error.value = e?.message ?? '加载失败'
   } finally {
     loading.value = false
-  }
-}
-
-async function loadDepth() {
-  if (isIndex.value) return
-  try {
-    depth.value = await marketApi.depth(code.value)
-  } catch {
-    /* 静默：盘口拿不到不影响价格与图表展示 */
   }
 }
 
@@ -264,21 +243,20 @@ function openSheet(side: 'buy' | 'sell') {
 }
 
 async function onSubmitted() {
-  await Promise.all([loadQuote(), loadDepth()])
+  await Promise.all([loadQuote()])
 }
 
 /** 价格与盘口高频刷新；图表跟着一起走，但只在秒级轻轻刷新一次，避免逐 tick 重绘 */
 const { pause, resume } = useIntervalFn(
   () => {
     loadQuote()
-    loadDepth()
   },
   3000,
   { immediate: false },
 )
 
 onMounted(async () => {
-  await Promise.all([loadQuote(), loadDepth(), loadChart(), loadWatch()])
+  await Promise.all([loadQuote(), loadChart(), loadWatch()])
   resume()
 })
 
@@ -291,10 +269,9 @@ watch(
     loading.value = true
     minutes.value = []
     bars.value = []
-    depth.value = null
     members.value = []
     mode.value = 'minute'
-    await Promise.all([loadQuote(), loadDepth(), loadChart(), loadWatch()])
+    await Promise.all([loadQuote(), loadChart(), loadWatch()])
   },
 )
 
@@ -373,56 +350,22 @@ const title = computed(() => {
           />
         </div>
 
-        <!-- ③ 盘口位：个股五档 / 指数涨跌分布，同一格位 -->
-        <div class="side-card">
-          <template v-if="!isIndex">
-            <div v-if="depth" class="depth">
-              <div v-for="(a, i) in asksDesc" :key="'a' + i" class="drow">
-                <span class="dlabel">卖{{ asksDesc.length - i }}</span>
-                <span class="dprice up tabular">{{ fmtPrice(a.price) }}</span>
-                <span class="dvol tabular">{{ fmtHands(a.volume) }}</span>
-              </div>
-              <div class="dsep"></div>
-              <div v-for="(b, i) in bidsList" :key="'b' + i" class="drow">
-                <span class="dlabel">买{{ i + 1 }}</span>
-                <span class="dprice down tabular">{{ fmtPrice(b.price) }}</span>
-                <span class="dvol tabular">{{ fmtHands(b.volume) }}</span>
-              </div>
-            </div>
-            <div v-else class="empty">盘口加载中…</div>
-          </template>
-
-          <template v-else>
-            <div class="dist">
-              <div class="dnum up">{{ distribution.up }}</div>
-              <div class="dnum flat">{{ distribution.flat }}</div>
-              <div class="dnum down">{{ distribution.down }}</div>
-            </div>
-            <div class="dbar">
-              <i class="seg up" :style="{ width: distribution.upPct + '%' }"></i>
-              <i class="seg flat" :style="{ width: distribution.flatPct + '%' }"></i>
-              <i class="seg down" :style="{ width: distribution.downPct + '%' }"></i>
-            </div>
-            <div class="dlegend">
+                <!-- ③ 涨跌分布：与图表上下排列 -->
+        <div class="dist-card">
+          <div class="dist-head">
+            <span class="dist-title">涨跌分布</span>
+            <span class="dlegend">
               <span class="up">涨 {{ distribution.up }}</span>
               <span class="flat">平 {{ distribution.flat }}</span>
               <span class="down">跌 {{ distribution.down }}</span>
-            </div>
-          </template>
+            </span>
+          </div>
+          <div class="dbar">
+            <i class="seg up" :style="{ width: distribution.upPct + '%' }"></i>
+            <i class="seg flat" :style="{ width: distribution.flatPct + '%' }"></i>
+            <i class="seg down" :style="{ width: distribution.downPct + '%' }"></i>
+          </div>
         </div>
-      </section>
-
-      <!-- ④ 资料区：个股是题材与规则，指数是成分股及其涨跌 -->
-      <section v-if="meta?.hotword || meta?.theme || meta?.note" class="card info-card">
-        <h3>资料</h3>
-        <p v-if="meta?.hotword" class="line"><span class="k">题材</span>{{ meta.hotword }}</p>
-        <p v-if="meta?.theme" class="line"><span class="k">概念</span>{{ meta.theme }}</p>
-        <p v-if="meta?.note" class="line"><span class="k">说明</span>{{ meta.note }}</p>
-        <p v-if="!isIndex" class="line">
-          <span class="k">交易规则</span>
-          T+1，{{ meta?.lot_size ?? 100 }} 股起，涨停 {{ fmtPrice(meta?.limit_up ?? 0) }} / 跌停
-          {{ fmtPrice(meta?.limit_down ?? 0) }}
-        </p>
       </section>
 
       <section v-if="isIndex && members.length" class="card info-card">
@@ -602,7 +545,9 @@ const title = computed(() => {
 
 /* ---------- ② 图表 + ③ 盘口 ---------- */
 .chart-row {
+  /* 指数页：图表在上、涨跌分布在下，纵向排列 */
   display: flex;
+  flex-direction: column;
   gap: 0;
   /* 图表贴边：卡片内边距会把曲线挤窄，这里去掉左右留白 */
   padding: 0 0 10px;
@@ -621,15 +566,25 @@ const title = computed(() => {
   padding: 8px 0 6px;
 }
 
-.side-card {
-  flex: 1 1 0;
-  min-width: 108px;
-  max-width: 136px;
-  padding: 8px 8px;
+.dist-card {
+  margin: 6px 12px 0;
+  padding: 10px 12px;
+  border-radius: var(--r-md);
+  background: var(--c-card);
+  border: 1px solid var(--c-line);
+}
+
+.dist-head {
   display: flex;
-  flex-direction: column;
-  justify-content: center;
-  border-left: 1px solid var(--c-line);
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.dist-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--c-text-2);
 }
 
 .chart-tabs {
@@ -679,40 +634,11 @@ const title = computed(() => {
 }
 
 /* 五档：一行一档，价格列定宽右对齐，量能列右对齐便于纵向比对 */
-.depth {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
 
-.drow {
-  display: grid;
-  grid-template-columns: 22px 1fr auto;
-  gap: 3px;
-  align-items: baseline;
-  font-size: 10.5px;
-}
 
-.dlabel {
-  color: var(--c-text-3);
-}
 
-.dprice {
-  text-align: right;
-  font-weight: 600;
-}
 
-.dvol {
-  text-align: right;
-  color: var(--c-text-2);
-  min-width: 34px;
-}
 
-.dsep {
-  height: 1px;
-  margin: 3px 0;
-  background: var(--c-line-strong);
-}
 
 .empty {
   font-size: 11px;
