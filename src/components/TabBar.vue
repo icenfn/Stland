@@ -1,13 +1,16 @@
 <script setup lang="ts">
 /**
- * 底部导航：五个主入口（首页 / 行情 / 自选 / 资产 / 我的）。
+ * 底部导航。
  *
- * 设计取舍：
- *  · 「自选」本轮成为一级入口 —— 自选股是散户最高频的页面（每天开盘先看自选），
- *    藏在行情页二级 tab 里要绕两次点击；
- *  · 「交易」不作为 Tab：下单是底部抽屉，从榜单或详情页就地弹出；
- *  · 「委托」不作为 Tab：委托/成交是「查看历史」的低频动作，独立路由（/orders），
- *    带返回键回到来源页面。
+ * 本轮变化：
+ *  · 「行情」「自选」不再各占一个 Tab —— 它们已经成为首页里的滑动面板
+ *    （顶部 tab + 左右滑动切换）。再从底栏点一次只是切面板，
+ *    却会让人以为要换页面，语义重复。
+ *  · 「资产」「我的」合并为「交易」：这两个页原本互相跳转、内容也互相引用
+ *    （资产页要看持仓盈亏，我的页要显示总资产），拆成两页等于把一件事分两处看。
+ *    合并后资金、持仓、盈亏、账户设置都在同一页。
+ *
+ * 因此底栏收敛为：首页 / 交易（机构用户多一个交易台）。
  */
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -26,24 +29,29 @@ interface TabItem {
 
 const tabs: TabItem[] = [
   { name: 'home', label: '首页', path: '/', icon: 'home' },
-  { name: 'market', label: '行情', path: '/market', icon: 'chart' },
-  { name: 'watch', label: '自选', path: '/watch', icon: 'star' },
-  { name: 'assets', label: '资产', path: '/assets', icon: 'wallet' },
-  { name: 'profile', label: '我的', path: '/profile', icon: 'user' },
+  { name: 'trade', label: '交易', path: '/trade', icon: 'wallet' },
 ]
 
-const activeName = computed(() => String(route.meta.tab ?? route.name ?? 'home'))
+/** 首页的三个面板与 /market、/watch 深链都归属「首页」这一个 Tab */
+const HOME_ALIASES = ['home', 'market', 'watch']
+
+const activeName = computed(() => {
+  const name = String(route.meta.tab ?? route.name ?? 'home')
+  return HOME_ALIASES.includes(name) ? 'home' : name
+})
 
 function go(item: TabItem) {
+  // 已经在首页面板里时，点「首页」回到第一个面板，而不是原地不动
+  if (item.name === 'home' && activeName.value === 'home') {
+    if (route.path !== '/') void router.push('/')
+    return
+  }
   if (route.path !== item.path) void router.push(item.path)
 }
 
 const icons: Record<string, string> = {
   home: 'M3 10.5 12 3l9 7.5V21a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1z',
-  chart: 'M4 20V6M4 20h16M8 20v-6M12 20V9M16 20v-9',
-  star: 'M12 3.6l2.6 5.4 5.9.8-4.3 4.2 1 5.9-5.2-2.8-5.2 2.8 1-5.9L3.5 9.8l5.9-.8z',
   wallet: 'M3 8a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v1H5a2 2 0 0 0 0 4h14v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z',
-  user: 'M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8M4 21c0-3.9 3.6-7 8-7s8 3.1 8 7',
 }
 </script>
 

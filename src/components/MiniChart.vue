@@ -31,8 +31,8 @@ const props = withDefaults(
     minutes?: Point[]
     bars?: Bar[]
     mode?: 'minute' | 'kline'
-    /** 副图类型：none 不显示、volume 成交量、macd MACD */
-    sub?: 'none' | 'volume' | 'macd'
+    /** 副图类型：volume 成交量、macd MACD、ratio 量比 */
+    sub?: 'none' | 'volume' | 'macd' | 'ratio'
     prevClose?: number
     height?: number
   }>(),
@@ -267,6 +267,61 @@ function drawMacd(ctx: CanvasRenderingContext2D, w: number, h: number) {
   line(dea, '#7aa9ff')
 }
 
+/**
+ * 副图：量比。
+ *
+ * 量比口径：这一根的量 ÷ 全区间每根的平均量，基准线 1.0。
+ * 为什么用「相对本区间均量」而不是「过去 5 日每分钟均量」：
+ * 客户端手上只有当前这一屏的序列，没有 5 日历史分钟量；
+ * 而量比要回答的问题本来就是「此刻的量相比常态是放大还是萎缩」，
+ * 以本区间均量为基准同样能看出放量/缩量，且不会因为换周期就失真。
+ * 服务端另外下发的 `volume_ratio` 是全市场口径，用于指标网格展示数值。
+ */
+function drawRatio(ctx: CanvasRenderingContext2D, w: number, h: number) {
+  const isKline = props.mode === 'kline'
+  const vols = isKline
+    ? (props.bars ?? []).map((b) => b.volume || 0)
+    : (props.minutes ?? []).map((p) => p.volume || 0)
+  const n = vols.length
+  if (n < 2) return
+  const mean = vols.reduce((a, b) => a + b, 0) / n
+  if (!(mean > 0)) return
+
+  const ratios = vols.map((v) => v / mean)
+  const top = Math.max(...ratios, 1.15)
+  const yOf = (r: number) => h - 1 - (r / top) * (h - 2)
+  const xOf = (i: number) => (i / Math.max(1, n - 1)) * w
+
+  // 基准线 1.0：量比高于它即放量
+  ctx.strokeStyle = 'rgba(255,255,255,0.22)'
+  ctx.setLineDash([4, 3])
+  ctx.lineWidth = 1
+  ctx.beginPath()
+  ctx.moveTo(0, yOf(1))
+  ctx.lineTo(w, yOf(1))
+  ctx.stroke()
+  ctx.setLineDash([])
+
+  // 量比折线：高于基准用暖色、低于用冷色，方便一眼分辨
+  const last = ratios[n - 1]
+  ctx.beginPath()
+  ratios.forEach((r, i) => {
+    const x = xOf(i)
+    const y = yOf(r)
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)
+  })
+  ctx.strokeStyle = last >= 1 ? '#e8b339' : '#7aa9ff'
+  ctx.lineWidth = 1.2
+  ctx.stroke()
+
+  const lx = xOf(n - 1)
+  const ly = yOf(last)
+  ctx.beginPath()
+  ctx.arc(lx, ly, 2.2, 0, Math.PI * 2)
+  ctx.fillStyle = last >= 1 ? '#e8b339' : '#7aa9ff'
+  ctx.fill()
+}
+
 function render() {
   const el = canvasRef.value
   if (!el) return
@@ -314,6 +369,7 @@ function render() {
   ctx.rect(0, 0, W, subH)
   ctx.clip()
   if (props.sub === 'volume') drawVolume(ctx, W, subH)
+  else if (props.sub === 'ratio') drawRatio(ctx, W, subH)
   else drawMacd(ctx, W, subH)
   ctx.restore()
 }

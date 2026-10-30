@@ -71,10 +71,20 @@ try {
     }
   })
 
-  // 路由守卫：未登录只能访问登录/注册；管理端路由校验角色
+  /**
+   * 允许未登录浏览的页面。
+   *
+   * 行情、个股、指数是公开信息，不该因为没账号就打不开 ——
+   * 上一版守卫把除登录页以外的所有路由都挡回登录页，等于不注册就看不到任何行情。
+   * 交易、委托、资产这些涉及账户数据的页面仍然要求登录。
+   */
+  const BROWSE_WITHOUT_LOGIN = new Set(['home', 'market', 'watch', 'stock', 'index'])
+
+  // 路由守卫：未登录可浏览公开行情，账户相关页面仍要求登录；管理端路由校验角色
   router.beforeEach((to) => {
     const isPublic = to.meta.public === true
-    if (!auth.isLoggedIn.value && !isPublic) {
+    const browseOk = BROWSE_WITHOUT_LOGIN.has(String(to.name ?? ''))
+    if (!auth.isLoggedIn.value && !isPublic && !browseOk) {
       return { name: 'login', query: { redirect: to.fullPath } }
     }
     if (to.meta.role && auth.isLoggedIn.value && !auth.can(String(to.meta.role))) {

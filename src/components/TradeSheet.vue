@@ -2,21 +2,24 @@
 /**
  * 下单底部抽屉。
  *
- * 设计取向：抽屉只负责「填参数 + 提交」，不再重复展示标的名称、最新价、板块、
- * 涨跌幅 —— 这些信息用户在打开抽屉之前刚在榜单或详情页看过，抽屉里再抄一遍
- * 既占高度又容易与行情不同步（抽屉打开期间价格在跳动，静态文案反而误导）。
- * 因此顶部只保留一根拖动条和一个关闭按钮。
+ * 本轮取向（按反馈调整）：
+ *  · 抽屉里不再放「买入 / 卖出」切换 —— 买卖方向由用户在详情页按下哪个按钮决定，
+ *    进抽屉后再切一次是重复输入，而且容易和底部按钮的颜色暗示打架。
+ *    抽屉只呈现「我正在买 X」或「我正在卖 X」这一个确定事实。
+ *  · 「限价 / 市价」改成「限价委托 / 市价委托」——「限价」两个字单独摆着看不出是
+ *    委托方式还是价格输入方式，加上「委托」后缀语义才完整。
+ *  · 显示可买（可卖）股数：用户下单前第一个要问的就是「我这笔钱能买多少」，
+ *    让他自己拿现金除以价格口算是这个页面最不该省掉的一步。
+ *  · 价格与数量都可用 ＋/－ 调整：手机键盘输数字既慢又容易点错，
+ *    步进按钮才是移动端调参的主要方式，输入框用于精确覆盖。
  *
  * 返回键语义：抽屉打开时按系统返回键，应当「关闭抽屉」而不是「退出当前页面」。
- * 实现方式是在打开时往历史栈压一个同地址的哨兵状态，并在 popstate 时拦下：
- *   · 返回键 → 历史回退 → 我们关闭抽屉（页面 URL 不变，用户仍停留在原页面）；
- *   · 点关闭按钮 / 点遮罩 → 我们主动 history.back()，让哨兵状态出栈，
- *     避免历史栈里残留无效状态、导致用户要按两次返回键才退页。
+ * 实现方式是在打开时往历史栈压一个同地址的哨兵状态，并在 popstate 时拦下。
  */
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { marketApi, tradeApi } from '@/api'
+import { accountApi, marketApi, tradeApi } from '@/api'
 import type { Quote, StockMeta, TradePreview } from '@/api/types'
-import { fmtAmount, fmtPrice } from '@/utils/format'
+import { fmtAmount, fmtMoney, fmtPrice } from '@/utils/format'
 
 const props = withDefaults(
   defineProps<{
@@ -40,13 +43,35 @@ const orderType = ref<'limit' | 'market'>('limit')
 const quote = ref<Quote | null>(null)
 const meta = ref<StockMeta | null>(null)
 const preview = ref<TradePreview | null>(null)
+/** 卖出方向的可卖股数：预览接口只给「可买」，卖出要自己查持仓 */
+const sellable = ref<number | null>(null)
 const message = ref('')
 const messageType = ref<'ok' | 'err'>('ok')
 const submitting = ref(false)
 
 const lot = computed(() => meta.value?.lot_size ?? 100)
-const quickQty = computed(() => [1, 2, 3, 5, 10].map((n) => n * lot.value))
-const estimateAmount = computed(() => Number(quote.value?.price ?? 0) * Number(quantity.value || 0))
+const isBuy = computed(() => side.value === 'buy')
+const sideLabel = computed(() => (isBuy.value ? '买入' : '卖出'))
+const tick = computed(() => meta.value?.tick_size ?? 0.01)
+
+const quickQty = computed(() => {
+  // 快捷比例：整仓、半仓、三分之一仓，比固定的 100/200/500 股更贴合真实下单习惯
+  const max = maxQuantity.value
+  if (!max) return [1, 2, 3, 5, 10].map((n) => n * lot.value)
+  const out = [max, Math.floor(max / 2 / lot.value) * lot.value, Math.floor(max / 3 / lot.value) * lot.value]
+  return [...new Set(out.filter((n) => n > 0))].slice(0, 3)
+})
+
+const estimateAmount = computed(() => {
+  const p = orderType.value === 'market' ? Number(quote.value?.price ?? 0) : Number(price.value || 0)
+  return p * Number(quantity.value || 0)
+})
+
+/** 可买（可卖）股数：买入看资金的整手上限，卖出看可用持仓 */
+const maxQuantity = computed(() => {
+  if (isBuy.value) return preview.value?.max_buy_quantity ?? 0
+  return sellable.value ?? 0
+})
 
 /** 是否已经压入了返回键哨兵状态 */
 let guardPushed = false
@@ -73,7 +98,6 @@ function onPopState() {
 /** 主动关闭：先把哨兵状态退掉，再通知父组件收起 */
 function close() {
   if (guardPushed) {
-    // 不先移除监听：由 history.back() 触发的 popstate 会负责关抽屉与解绑
     window.history.back()
     return
   }
@@ -90,6 +114,17 @@ async function loadSymbol() {
   } catch (e: any) {
     message.value = e?.message ?? '标的不存在'
     messageType.value = 'err'
+  }
+  if (!isBuy.value) await loadSellable()
+}
+
+async function loadSellable() {
+  try {
+    const res = await accountApi.positions()
+    const p = res.items.find((x) => x.code === code.value)
+    sellable.value = p?.available ?? 0
+  } catch {
+    sellable.value = null
   }
 }
 
@@ -111,10 +146,28 @@ async function refreshPreview() {
   }
 }
 
+/** 价格步进：按最小变动价位调整，市价委托下不允许改价 */
 function stepPrice(delta: number) {
-  const tick = meta.value?.tick_size ?? 0.01
-  const next = Math.max(tick, Number(price.value || 0) + delta * tick)
+  if (orderType.value === 'market') return
+  const next = Math.max(tick.value, Number(price.value || 0) + delta * tick.value)
   price.value = next.toFixed(2)
+}
+
+/** 数量步进：按整手增减，下限约束在 1 手，上限不超过可买（可卖） */
+function stepQty(delta: number) {
+  const cur = Number(quantity.value || 0)
+  let next = cur + delta * lot.value
+  if (next < lot.value) next = lot.value
+  const cap = maxQuantity.value
+  if (cap > 0 && next > cap) next = Math.floor(cap / lot.value) * lot.value || lot.value
+  quantity.value = String(next)
+}
+
+/** 一键填满可买（可卖）股数 */
+function fillMax() {
+  const cap = maxQuantity.value
+  if (cap <= 0) return
+  quantity.value = String(Math.floor(cap / lot.value) * lot.value)
 }
 
 function setMessage(text: string, type: 'ok' | 'err') {
@@ -128,6 +181,12 @@ async function submit() {
   if (!qty || qty <= 0) return setMessage('请输入委托数量', 'err')
   if (qty % lot.value !== 0) return setMessage(`数量需为 ${lot.value} 股的整数倍`, 'err')
   if (orderType.value === 'limit' && !(Number(price.value) > 0)) return setMessage('请输入委托价格', 'err')
+  if (isBuy.value && maxQuantity.value > 0 && qty > maxQuantity.value) {
+    return setMessage(`可买仅 ${maxQuantity.value} 股`, 'err')
+  }
+  if (!isBuy.value && sellable.value !== null && qty > sellable.value) {
+    return setMessage(`可卖仅 ${sellable.value} 股`, 'err')
+  }
   submitting.value = true
   try {
     const res = await tradeApi.order({
@@ -141,12 +200,13 @@ async function submit() {
     if (o.status === 'filled') {
       setMessage(`已全部成交：均价 ${fmtPrice(o.avg_fill_price, 4)}，费用 ${fmtPrice(o.fee)} 元`, 'ok')
     } else if (o.status === 'partial') {
-      setMessage(`部分成交 ${o.filled_quantity}/${o.quantity} 股`, 'ok')
+      setMessage(`部分成交 ${o.filled_quantity}/${o.quantity} 股，余量继续挂单`, 'ok')
     } else {
-      setMessage('委托已受理，可在「委托与成交」中查看', 'ok')
+      setMessage('委托已受理，价格到达后会成交，可在「交易」页查看', 'ok')
     }
     emit('submitted', { code: code.value, side: side.value })
     await refreshPreview()
+    if (!isBuy.value) await loadSellable()
   } catch (e: any) {
     setMessage(e?.message ?? '下单失败', 'err')
   } finally {
@@ -163,10 +223,12 @@ watch(
     }
     message.value = ''
     preview.value = null
+    sellable.value = null
     code.value = props.code
     side.value = props.side
     price.value = ''
     quantity.value = '100'
+    orderType.value = 'limit'
     guardOn()
     void loadSymbol().then(refreshPreview)
   },
@@ -188,34 +250,62 @@ onBeforeUnmount(guardOff)
           <button class="sheet-close" aria-label="关闭" @click="close">✕</button>
         </div>
 
-        <div class="side-switch">
-          <button class="side-btn buy" :class="{ on: side === 'buy' }" @click="side = 'buy'">买入</button>
-          <button class="side-btn sell" :class="{ on: side === 'sell' }" @click="side = 'sell'">卖出</button>
+        <!-- 方向标题：只陈述「正在买/卖什么」，不再提供切换 -->
+        <div class="head">
+          <span class="head-tag" :class="isBuy ? 'buy' : 'sell'">{{ sideLabel }}</span>
+          <span class="head-name">{{ quote?.name ?? '—' }}</span>
+          <span class="head-code">{{ code }}</span>
+          <span class="head-price tabular" :class="(quote?.change ?? 0) >= 0 ? 'up' : 'down'">
+            {{ fmtPrice(quote?.price ?? 0) }}
+          </span>
         </div>
 
+        <!-- 委托方式 -->
         <div class="seg-row">
-          <button class="seg-btn" :class="{ on: orderType === 'limit' }" @click="orderType = 'limit'">限价</button>
-          <button class="seg-btn" :class="{ on: orderType === 'market' }" @click="orderType = 'market'">市价</button>
+          <button class="seg-btn" :class="{ on: orderType === 'limit' }" @click="orderType = 'limit'">
+            限价委托
+          </button>
+          <button class="seg-btn" :class="{ on: orderType === 'market' }" @click="orderType = 'market'">
+            市价委托
+          </button>
         </div>
 
+        <!-- 价格：－ 输入 ＋ -->
         <div class="field">
           <span class="flabel">价格</span>
-          <input v-model="price" class="finput tabular" type="number" inputmode="decimal"
-            :disabled="orderType === 'market'" :placeholder="orderType === 'market' ? '市价成交' : '0.00'" />
-          <div class="steppers">
-            <button class="step" @click="stepPrice(-1)">－</button>
-            <button class="step" @click="stepPrice(1)">＋</button>
-          </div>
+          <button class="step" :disabled="orderType === 'market'" @click="stepPrice(-1)">－</button>
+          <input
+            v-model="price"
+            class="finput tabular"
+            type="number"
+            inputmode="decimal"
+            :disabled="orderType === 'market'"
+            :placeholder="orderType === 'market' ? '按市价成交' : '0.00'"
+          />
+          <button class="step" :disabled="orderType === 'market'" @click="stepPrice(1)">＋</button>
         </div>
 
+        <!-- 数量：－ 输入 ＋ -->
         <div class="field">
           <span class="flabel">数量</span>
+          <button class="step" @click="stepQty(-1)">－</button>
           <input v-model="quantity" class="finput tabular" type="number" inputmode="numeric" placeholder="0" />
+          <button class="step" @click="stepQty(1)">＋</button>
           <span class="unit">股</span>
         </div>
 
-        <div class="quick-qty">
-          <button v-for="q in quickQty" :key="q" class="qbtn" @click="quantity = String(q)">{{ q }}</button>
+        <!-- 可买 / 可卖 + 快捷比例 -->
+        <div class="cap-row">
+          <span class="cap">
+            {{ isBuy ? '可买' : '可卖' }}
+            <b class="tabular">{{ maxQuantity || '—' }}</b> 股
+          </span>
+          <div class="qbtns">
+            <button v-for="q in quickQty" :key="q" class="qbtn" @click="quantity = String(q)">
+              {{ q }}
+            </button>
+            <button class="qbtn max" @click="fillMax">全部</button>
+          </div>
         </div>
 
         <div class="preview">
@@ -235,16 +325,15 @@ onBeforeUnmount(guardOff)
             <span class="tabular">{{ fmtPrice(preview?.fee.total ?? 0) }} 元</span>
           </div>
           <div class="prow">
-            <span>可成交</span>
-            <span class="tabular">{{ preview?.fillable_quantity ?? 0 }} 股</span>
+            <span>可用资金</span>
+            <span class="tabular">{{ fmtMoney(preview?.available_cash ?? 0) }}</span>
           </div>
         </div>
 
         <p v-if="message" class="msg" :class="messageType">{{ message }}</p>
 
-        <button class="btn btn-block" :class="side === 'buy' ? 'btn-buy' : 'btn-sell'" :disabled="submitting"
-          @click="submit">
-          {{ submitting ? '提交中…' : side === 'buy' ? '确认买入' : '确认卖出' }}
+        <button class="btn btn-block" :class="isBuy ? 'btn-buy' : 'btn-sell'" :disabled="submitting" @click="submit">
+          {{ submitting ? '提交中…' : `确认${sideLabel}` }}
         </button>
         <p class="tip">撮合按价格优先、时间优先逐档成交；未成交部分资金自动解冻。</p>
       </div>
@@ -296,47 +385,61 @@ onBeforeUnmount(guardOff)
   cursor: pointer;
 }
 
-.side-switch {
+.head {
   display: flex;
-  gap: var(--sp-2);
-  background: var(--c-card);
-  border: 1px solid var(--c-line);
-  border-radius: var(--r-md);
-  padding: 4px;
-  margin-top: var(--sp-2);
+  align-items: baseline;
+  gap: 8px;
+  padding: 2px 0 4px;
+  min-width: 0;
 }
-.side-btn {
-  flex: 1;
-  border: none;
-  background: none;
-  color: var(--c-text-2);
-  font-size: 14px;
+.head-tag {
+  font-size: 11px;
   font-weight: 700;
-  padding: 9px 0;
-  border-radius: 9px;
-  cursor: pointer;
+  padding: 2px 7px;
+  border-radius: 6px;
+  flex: 0 0 auto;
 }
-.side-btn.buy.on {
+.head-tag.buy {
+  color: #fff;
   background: linear-gradient(135deg, #ff5c5e, #d92b2f);
-  color: #fff;
 }
-.side-btn.sell.on {
-  background: linear-gradient(135deg, #1cc477, #0a8f52);
+.head-tag.sell {
   color: #fff;
+  background: linear-gradient(135deg, #1cc477, #0a8f52);
+}
+.head-name {
+  font-size: 15px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.head-code {
+  font-size: 11px;
+  color: var(--c-text-3);
+  flex: 0 0 auto;
+}
+.head-price {
+  margin-left: auto;
+  font-size: 15px;
+  font-weight: 700;
+  flex: 0 0 auto;
 }
 
 .seg-row {
   display: flex;
   gap: 6px;
-  margin-top: var(--sp-3);
+  margin-top: var(--sp-2);
 }
 .seg-btn {
+  flex: 1;
   background: var(--c-card);
   border: 1px solid var(--c-line);
-  border-radius: 8px;
+  border-radius: 9px;
   color: var(--c-text-2);
-  font-size: 12px;
-  padding: 6px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 9px 0;
   cursor: pointer;
 }
 .seg-btn.on {
@@ -348,13 +451,13 @@ onBeforeUnmount(guardOff)
 .field {
   display: flex;
   align-items: center;
-  gap: var(--sp-2);
-  padding: 10px 0;
+  gap: 8px;
+  padding: 9px 0;
   border-bottom: 1px solid var(--c-line);
   margin-top: var(--sp-2);
 }
 .flabel {
-  flex: 0 0 42px;
+  flex: 0 0 34px;
   font-size: 12px;
   color: var(--c-text-2);
 }
@@ -367,7 +470,7 @@ onBeforeUnmount(guardOff)
   color: var(--c-text);
   font-size: 19px;
   font-weight: 700;
-  text-align: right;
+  text-align: center;
 }
 .finput:disabled {
   color: var(--c-text-3);
@@ -375,36 +478,58 @@ onBeforeUnmount(guardOff)
 .unit {
   font-size: 11px;
   color: var(--c-text-3);
-}
-.steppers {
-  display: flex;
-  gap: 6px;
+  flex: 0 0 auto;
 }
 .step {
-  width: 32px;
-  height: 32px;
-  border-radius: 8px;
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
   background: var(--c-card);
   border: 1px solid var(--c-line);
   color: var(--c-text);
-  font-size: 15px;
+  font-size: 16px;
+  line-height: 1;
   cursor: pointer;
 }
+.step:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
 
-.quick-qty {
+.cap-row {
   display: flex;
-  gap: 6px;
+  align-items: center;
+  gap: 10px;
   margin: var(--sp-3) 0 var(--sp-2);
 }
-.qbtn {
+.cap {
+  font-size: 11px;
+  color: var(--c-text-3);
+  flex: 0 0 auto;
+}
+.cap b {
+  color: var(--c-text-2);
+}
+.qbtns {
+  display: flex;
+  gap: 6px;
   flex: 1;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+.qbtn {
   background: var(--c-card);
   border: 1px solid var(--c-line);
   border-radius: 8px;
   color: var(--c-text-2);
   font-size: 11px;
-  padding: 7px 0;
+  padding: 6px 10px;
   cursor: pointer;
+}
+.qbtn.max {
+  border-color: rgba(232, 56, 61, 0.5);
+  color: #ff8b8d;
 }
 
 .preview {

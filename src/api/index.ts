@@ -141,6 +141,12 @@ export const watchApi = {
   createGroup: (name: string) =>
     alovaInstance.Post<{ ok: boolean; group: WatchGroup; existed: boolean }>('/api/watch/groups', { name }),
 
+  renameGroup: (id: number, name: string) =>
+    alovaInstance.Patch<{ ok: boolean; group: WatchGroup; changed: boolean }>(
+      `/api/watch/groups/${id}`,
+      { name },
+    ),
+
   deleteGroup: (id: number) =>
     alovaInstance.Delete<{ ok: boolean; moved: number; fallback_group_id: number }>(`/api/watch/groups/${id}`),
 
