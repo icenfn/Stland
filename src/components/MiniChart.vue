@@ -3,7 +3,7 @@
  * 副图种类：图表组件与两个详情页都要用，因此放在普通 script 块里导出。
  * `<script setup>` 内不允许 export，独立声明块才能被外部 import type。
  */
-export type SubKind = 'none' | 'volume' | 'macd' | 'kdj' | 'ratio' | 'game'
+export type SubKind = 'volume' | 'macd' | 'kdj' | 'ratio' | 'game'
 </script>
 
 <script setup lang="ts">
@@ -131,15 +131,18 @@ const props = withDefaults(
     multiDay?: boolean
     /** 时间位总数；0 表示按「一天 240 位」自动推断 */
     slots?: number
+    /** 当前 K 线周期（1min/5min/day/week/month…），只用于横轴刻度格式 */
+    period?: string
   }>(),
   {
     mode: 'minute',
-    sub: 'none',
+    sub: 'macd',
     prevClose: 0,
     height: 200,
     part: 'all',
     multiDay: false,
     slots: 0,
+    period: 'day',
     minutes: () => [],
     bars: () => [],
   },
@@ -648,28 +651,60 @@ function drawGame(ctx: CanvasRenderingContext2D, w: number, h: number) {
 }
 
 /** 把一根 K 线的时间转成刻度文字 */
-function barLabel(t: number | string): string {
+const INTRADAY_PERIODS = new Set(['1min', '5min', '15min', '30min', '60min', '120min'])
+
+function pad2(n: number): string {
+  return String(n).padStart(2, '0')
+}
+
+/** 把柱子时间解析成各字段；字符串与秒/毫秒时间戳都支持 */
+function parseBarTime(t: number | string): {
+  y: number
+  mo: number
+  d: number
+  hh: number
+  mi: number
+} | null {
   if (typeof t === 'string') {
-    // "2026-10-31" 或 "2026-10-31 10:30" 都可能出现
-    const m = t.match(/(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}:\d{2}))?/)
-    if (m) return m[4] ?? `${m[2]}/${m[3]}`
-    return t
+    const m = t.match(/(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}))?/)
+    if (!m) return null
+    return {
+      y: Number(m[1]),
+      mo: Number(m[2]),
+      d: Number(m[3]),
+      hh: m[4] ? Number(m[4]) : 0,
+      mi: m[5] ? Number(m[5]) : 0,
+    }
   }
-  // 数字按秒或毫秒时间戳处理
   const ms = t > 1e12 ? t : t * 1000
   const d = new Date(ms)
-  if (Number.isNaN(d.getTime())) return ''
-  const hh = String(d.getHours()).padStart(2, '0')
-  const mm = String(d.getMinutes()).padStart(2, '0')
-  return `${hh}:${mm}`
+  if (Number.isNaN(d.getTime())) return null
+  return { y: d.getFullYear(), mo: d.getMonth() + 1, d: d.getDate(), hh: d.getHours(), mi: d.getMinutes() }
+}
+
+/**
+ * 一根柱子的横轴文字，按周期取不同粒度：
+ *   日内周期 → 时:分        （5分/15分/60分… 用同一格式，读者只需知道「这是几点」）
+ *   日 / 周  → 月/日        （同一屏很少跨年，写年份会挤掉真正有用的信息）
+ *   月 / 季  → 年/月
+ *   年       → 年
+ */
+function barLabel(t: number | string, period: string): string {
+  const p = parseBarTime(t)
+  if (!p) return typeof t === 'string' ? t : ''
+  if (INTRADAY_PERIODS.has(period)) return `${pad2(p.hh)}:${pad2(p.mi)}`
+  if (period === 'month' || period === 'quarter') return `${p.y}/${pad2(p.mo)}`
+  if (period === 'year') return String(p.y)
+  return `${pad2(p.mo)}/${pad2(p.d)}`
 }
 
 /**
  * 横轴刻度：贴着副图下方渲染，刻度位置与主图/副图共用同一套时间位。
  *
- * 分时：标出开盘、上午中段、午间、下午中段、收盘五个位置；
- * 五日：标每一天的起始日期；
- * K 线：在可见区间内等距取 4 根，标出它们的时间。
+ * 刻度密度按「可用宽度」反推，而不是写死 4~5 个：
+ *   屏幕窄、或者标签本身变长（月/季周期写「2026/10」）时自动减少刻度，
+ *   否则最右和最左的文字会互相压住。取点时首尾固定包含，保证能读到区间端点；
+ *   相邻标签文字相同的直接跳过（日线跨月时可能出现两个「10/01」）。
  */
 function drawAxis(ctx: CanvasRenderingContext2D, w: number, h: number) {
   ctx.font = '10px -apple-system, "PingFang SC", system-ui, sans-serif'
@@ -681,16 +716,26 @@ function drawAxis(ctx: CanvasRenderingContext2D, w: number, h: number) {
     const bars = props.bars ?? []
     const n = bars.length
     if (!n) return
-    const want = Math.min(4, n)
-    for (let k = 0; k < want; k += 1) {
-      const i = Math.round((k / Math.max(1, want - 1)) * (n - 1))
-      const slot = w / n
-      const x = slot * (i + 0.5)
+    const period = props.period || 'day'
+    // 每个刻度至少占 52px，最多 5 个，最少 2 个
+    const want = Math.max(2, Math.min(5, Math.floor(w / 52) + 1))
+    const slot = w / n
+    const idxs: number[] = []
+    for (let k = 0; k < want; k += 1) idxs.push(Math.round((k / (want - 1)) * (n - 1)))
+
+    let last = ''
+    idxs.forEach((i, k) => {
+      const bar = bars[i]
+      if (!bar) return
+      const label = barLabel(bar.time, period)
+      if (!label || label === last) return
+      last = label
       const first = k === 0
-      const lastOne = k === want - 1
+      const lastOne = k === idxs.length - 1
       ctx.textAlign = first ? 'left' : lastOne ? 'right' : 'center'
-      ctx.fillText(barLabel(bars[i].time), first ? 0 : lastOne ? w : x, mid)
-    }
+      // 首尾贴边显示，避免文字被裁掉半个字
+      ctx.fillText(label, first ? 0 : lastOne ? w : slot * (i + 0.5), mid)
+    })
     return
   }
 
@@ -700,19 +745,23 @@ function drawAxis(ctx: CanvasRenderingContext2D, w: number, h: number) {
   const slot = w / Math.max(1, tl.cap)
 
   if (props.multiDay) {
-    // 五日：每天标一次日期，只在日分隔线处写
+    // 五日：每天标一次日期，写在日分隔线右侧
     const marks = tl.dayStarts
+    const step = marks.length > 3 && w < 320 ? 2 : 1
     marks.forEach((d, k) => {
-      const x = d.pos * slot
-      ctx.textAlign = k === 0 ? 'left' : 'center'
+      if (k % step !== 0) return
       const label = d.day ? d.day.slice(5) : ''
-      if (label) ctx.fillText(label, k === 0 ? 0 : x + 2, mid)
+      if (!label) return
+      const first = k === 0
+      ctx.textAlign = first ? 'left' : 'center'
+      ctx.fillText(label, first ? 0 : d.pos * slot + 3, mid)
     })
     return
   }
 
   // 单日：五个固定时间位。11:30 与 13:00 是同一位置（午休不占分钟位），
-  // 因此合并写成「11:30/13:00」。
+  // 因此合并写成「11:30/13:00」。窄屏只留开盘 / 午间 / 收盘三个，
+  // 中间两个在 320px 以下必然互相压字。
   const ticks: Array<{ pos: number; label: string }> = [
     { pos: 0, label: '9:30' },
     { pos: 60, label: '10:30' },
@@ -720,18 +769,13 @@ function drawAxis(ctx: CanvasRenderingContext2D, w: number, h: number) {
     { pos: 180, label: '14:00' },
     { pos: MINUTES_PER_DAY - 1, label: '15:00' },
   ]
-  ticks.forEach((t, k) => {
+  const shown = w < 300 ? [ticks[0], ticks[2], ticks[4]] : ticks
+  shown.forEach((t, k) => {
+    const first = k === 0
+    const lastOne = k === shown.length - 1
+    ctx.textAlign = first ? 'left' : lastOne ? 'right' : 'center'
     const x = t.pos * slot + slot / 2
-    if (k === 0) {
-      ctx.textAlign = 'left'
-      ctx.fillText(t.label, 0, mid)
-    } else if (k === ticks.length - 1) {
-      ctx.textAlign = 'right'
-      ctx.fillText(t.label, w, mid)
-    } else {
-      ctx.textAlign = 'center'
-      ctx.fillText(t.label, x, mid)
-    }
+    ctx.fillText(t.label, first ? 0 : lastOne ? w : x, mid)
   })
 }
 
@@ -761,9 +805,17 @@ function render() {
   const el = canvasRef.value
   if (!el) return
   const rect = el.getBoundingClientRect()
+  // 布局尚未稳定（宽度为 0，例如抽屉开合过程中的一帧）时直接跳过：
+  // 此时把 canvas 尺寸写成 1px 会清空 backing store，等下一帧再按真实尺寸
+  // 重画，用户看到的就是「K 线闪一下」。
+  if (rect.width < 1 || rect.height < 1) return
   const ratio = dpr()
-  el.width = Math.max(1, Math.floor(rect.width * ratio))
-  el.height = Math.max(1, Math.floor(rect.height * ratio))
+  const w = Math.max(1, Math.floor(rect.width * ratio))
+  const h = Math.max(1, Math.floor(rect.height * ratio))
+  // 只有尺寸真的变了才重新赋值：给 canvas.width 赋同样的值也会清空画布并
+  // 触发一次重绘，ResizeObserver 在亚像素变化下会连续回调，表现为闪白。
+  if (el.width !== w) el.width = w
+  if (el.height !== h) el.height = h
   const ctx = el.getContext('2d')
   if (!ctx) return
   ctx.setTransform(ratio, 0, 0, ratio, 0, 0)
@@ -791,9 +843,9 @@ function render() {
   }
 
   // all：同一块画布上下分区
-  const showSub = props.sub !== 'none'
-  const gap = showSub ? 5 : 0
-  const subH = showSub ? Math.round((H - gap) * 0.3) : 0
+  // 副图始终存在（「不显示副图」已移除），主副图按 7:3 固定分配高度
+  const gap = 5
+  const subH = Math.round((H - gap) * 0.3)
   const mainH = H - subH - gap
 
   ctx.save()
@@ -805,8 +857,7 @@ function render() {
   else drawMinute(ctx, W, mainH)
   ctx.restore()
 
-  if (!showSub) return
-
+  // 主图与副图之间的分隔线（「不显示副图」已移除，副图始终存在）
   ctx.strokeStyle = 'rgba(255,255,255,0.12)'
   ctx.lineWidth = 1
   ctx.beginPath()

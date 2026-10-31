@@ -12,8 +12,13 @@
  *    不在客户端按代码逐个拉详情 —— 移动端 N+1 请求会让首屏明显卡顿；
  *  · 行内右侧「×」移出自选；空态给出「去行情挑一只」的出口。
  *
- * 分组的语义（与服务端一致）：一支股票只属于一个分组；把它加到别的分组
- * 等于「移动」；删除分组不会删股票，成分会回到默认分组。
+ * 分组的语义（与服务端一致）：一只股票可以同时属于多个分组，
+ * 加入自选默认放进第一个分组；删除分组不会删股票（若它还属于别的分组，
+ * 只去掉这一条成员关系，否则回到默认分组）。
+ *
+ * 分组排序：管理抽屉里按住行首的拖拽把手上下拖动即可调整顺序。
+ * 拖拽过程中只在本地区重排（跟手），松手后一次性把新顺序提交给服务端；
+ * 提交失败就回滚到拖动前的顺序，避免界面顺序与服务端不一致。
  */
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
@@ -39,6 +44,69 @@ const editingId = ref<number>(0)
 const editName = ref('')
 
 const activeGroup = computed(() => groups.value.find((g) => g.id === activeId.value) ?? null)
+
+/* ---------------- 分组拖拽排序 ---------------- */
+/** 正在被拖动行的下标，-1 表示没有在拖 */
+const dragIdx = ref(-1)
+/** 拖动中的纵向位移，只用于给被拖动行一点跟手反馈 */
+const dragY = ref(0)
+/** 拖动开始前的顺序快照，提交失败时回滚 */
+let orderSnapshot: WatchGroup[] = []
+let dragStartY = 0
+/** 拖拽把手的指针 id，用于在指针移动时判断是否属于本次拖动 */
+let dragPointer: number | null = null
+
+function startDrag(e: PointerEvent, index: number) {
+  if (busy.value) return
+  dragIdx.value = index
+  dragY.value = 0
+  dragStartY = e.clientY
+  dragPointer = e.pointerId
+  orderSnapshot = groups.value.slice()
+  ;(e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId)
+  e.preventDefault()
+}
+
+function moveDrag(e: PointerEvent) {
+  if (dragIdx.value < 0 || e.pointerId !== dragPointer) return
+  dragY.value = e.clientY - dragStartY
+  // 用行高换算出「越过了几行」，就地交换顺序，视觉上就是别的行让位
+  const rowH = 46
+  const shift = Math.round(dragY.value / rowH)
+  const from = dragIdx.value
+  const to = Math.max(0, Math.min(groups.value.length - 1, from + shift))
+  if (to !== from) {
+    const list = groups.value.slice()
+    const [moved] = list.splice(from, 1)
+    list.splice(to, 0, moved)
+    groups.value = list
+    dragIdx.value = to
+    // 保持「手指相对位置」连续：换位后重置基准点
+    dragStartY = e.clientY
+    dragY.value = 0
+  }
+}
+
+async function endDrag(e?: PointerEvent) {
+  if (dragIdx.value < 0) return
+  dragIdx.value = -1
+  dragY.value = 0
+  dragPointer = null
+  const ids = groups.value.map((g) => g.id)
+  const before = orderSnapshot.map((g) => g.id)
+  // 顺序没变就不必打请求
+  if (ids.join(',') === before.join(',')) return
+  busy.value = true
+  try {
+    await watchApi.reorderGroups(ids)
+  } catch (err: any) {
+    // 提交失败：回到拖动前的顺序，并提示，避免「看着改了、实际没改」
+    groups.value = orderSnapshot.slice()
+    error.value = err?.message ?? '分组排序保存失败'
+  } finally {
+    busy.value = false
+  }
+}
 /** 至少要留一个分组，最后一个不允许删 */
 const canDelete = computed(() => groups.value.length > 1)
 
@@ -246,10 +314,34 @@ onMounted(refresh)
         <span class="m-title">分组管理</span>
         <button class="m-close" aria-label="关闭" @click="manageOpen = false">✕</button>
       </div>
-      <p class="m-tip">删除分组不会删除其中的股票，它们会回到默认分组。</p>
+      <p class="m-tip">按住左侧把手可拖动调整分组顺序；删除分组不会删除其中的股票。</p>
 
       <div class="m-list">
-        <div v-for="g in groups" :key="g.id" class="m-row">
+        <div
+          v-for="(g, gi) in groups"
+          :key="g.id"
+          class="m-row"
+          :class="{ dragging: dragIdx === gi }"
+        >
+          <!-- 拖拽把手：单独一块区域起手，避免和行内的「重命名/删除」抢事件 -->
+          <button
+            class="m-grip"
+            aria-label="拖动调整顺序"
+            @pointerdown="startDrag($event, gi)"
+            @pointermove="moveDrag"
+            @pointerup="endDrag"
+            @pointercancel="endDrag"
+          >
+            <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+              <path
+                d="M4 8h16M4 16h16"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.8"
+                stroke-linecap="round"
+              />
+            </svg>
+          </button>
           <template v-if="editingId === g.id">
             <input
               v-model="editName"
@@ -497,6 +589,28 @@ onMounted(refresh)
 }
 .m-row:last-child {
   border-bottom: none;
+}
+.m-row.dragging {
+  position: relative;
+  z-index: 1;
+  background: rgba(232, 56, 61, 0.1);
+}
+.m-grip {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--c-text-3);
+  cursor: grab;
+  touch-action: none;
+}
+.m-grip:active {
+  cursor: grabbing;
 }
 .m-name {
   flex: 1;

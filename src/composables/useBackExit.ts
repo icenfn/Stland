@@ -27,6 +27,7 @@
 import { onBeforeUnmount, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import type { Router, RouteLocationNormalized } from 'vue-router'
+import { takeBackConsumed } from './sheetStack'
 
 const EXIT_HINT = '再按一次退出股岛'
 /** 二次确认窗口：3 秒 */
@@ -195,6 +196,8 @@ export function useBackExit() {
   function onPopState(): void {
     // 路由处理 popstate 与这里谁先谁后不固定，统一等一拍再读当前路由
     window.setTimeout(() => {
+      // 底部抽屉已经消费了这次返回（只关抽屉），页面层不再做任何处理
+      if (takeBackConsumed()) return
       const cur = router.currentRoute.value
 
       if (!isShellRoute(cur)) {

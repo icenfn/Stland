@@ -40,6 +40,8 @@ import AppBar from '@/components/AppBar.vue'
 import KLineChart from '@/components/KLineChart.vue'
 import type { SubKind } from '@/components/MiniChart.vue'
 import TradeSheet from '@/components/TradeSheet.vue'
+import WatchAddSheet from '@/components/WatchAddSheet.vue'
+import { useLongPress } from '@/composables/useLongPress'
 import { fmtAmount, fmtPct, fmtPrice, fmtVolume, trendClass } from '@/utils/format'
 
 const route = useRoute()
@@ -67,26 +69,9 @@ const mode = ref<'minute' | 'kline'>('minute')
 /** 分时是否为「五日」形态：true 时横轴是最近五个交易日首尾相接 */
 const fiveDay = ref(false)
 const period = ref<KlinePeriod>('day')
-/** 副图：无 / 成交量 / MACD —— 纯展示切换，不产生请求 */
+/** 副图：成交量 / MACD / KDJ / 量比 / 分时博弈 —— 纯展示切换，不产生请求 */
 const sub = ref<SubKind>('macd')
-/** 「更多」展开态：平铺低频周期，避免六个主项被稀释成一排小字 */
-const moreOpen = ref(false)
 
-/**
- * 「更多」里的低频周期。
- *
- * 为什么不把它们平铺在首行：首行是高频入口，塞进 11 个之后每个按钮只剩 30px，
- * 手指点不准，也看不出当前选中哪一个。分/周/月这些「偶尔才看一眼」的周期
- * 收进二级平铺，一次点击可见，比横向滚动去找更符合手机的触摸尺寸。
- */
-/** 传给共用图表组件的主周期栏：分时 / 五日 / 日 / 周 / 月，低频项收进「更多」 */
-const MAIN_TABS = [
-  { id: 'minute', label: '分时' },
-  { id: 'fiveDay', label: '五日' },
-  { id: 'day', label: '日K' },
-  { id: 'week', label: '周K' },
-  { id: 'month', label: '月K' },
-]
 
 /**
  * 图表组件只回报「用户点了哪个 id」，由页面决定走分时还是 K 线接口 ——
@@ -98,20 +83,6 @@ function onChartSelect(id: string): void {
   switchPeriod(id as KlinePeriod)
 }
 
-const MORE_PERIODS: Array<{ v: KlinePeriod; label: string }> = [
-  { v: '1min', label: '1分' },
-  { v: '5min', label: '5分' },
-  { v: '15min', label: '15分' },
-  { v: '30min', label: '30分' },
-  { v: '60min', label: '60分' },
-  { v: '120min', label: '120分' },
-  { v: 'quarter', label: '季K' },
-  { v: 'year', label: '年K' },
-]
-
-/** 当前周期是否属于「更多」里的那一批：用于把首行「更多」按钮点亮 */
-/** 「更多」里平铺的低频周期，交给共用图表组件渲染 */
-const MORE_CHIPS = MORE_PERIODS.map((p) => ({ id: p.v, label: p.label }))
 
 /**
  * 当前图表里出现了哪些非连续竞价时段。
@@ -126,6 +97,18 @@ const sheetSide = ref<'buy' | 'sell'>('buy')
 
 const watching = ref(false)
 const watchBusy = ref(false)
+/** 长按加自选：弹出分组多选抽屉 */
+const addSheetOpen = ref(false)
+
+/**
+ * 长按「加自选」= 选分组。
+ * 单击仍走 toggleWatch（默认进第一个分组），两者互不干扰：
+ * 长按判定成立后，这一次 pointerup 引起的 click 会被吞掉（见 useLongPress）。
+ */
+const watchLongPress = useLongPress(() => {
+  if (watching.value || watchBusy.value) return
+  addSheetOpen.value = true
+})
 
 const pctClass = computed(() => trendClass(quote.value?.change_pct ?? 0))
 const priceClass = computed(() => trendClass(quote.value?.change ?? 0))
@@ -156,15 +139,6 @@ const statRows = computed(() => {
   return rows
 })
 
-/** 指数没有委托簿，这一格改放涨跌家数 —— 与五档同宽同位，保持两页节奏一致 */
-const distribution = computed(() => {
-  const q = quote.value
-  const up = q?.up ?? 0
-  const down = q?.down ?? 0
-  const flat = q?.flat ?? 0
-  const total = Math.max(1, up + down + flat)
-  return { up, down, flat, upPct: (up / total) * 100, flatPct: (flat / total) * 100, downPct: (down / total) * 100 }
-})
 
 /**
  * 把个股报价与指数报价统一成 DetailQuote。
@@ -293,17 +267,16 @@ async function toggleWatch() {
   }
 }
 
-/**
- * 切周期。
- *
- * 点「更多」里的短周期时，把「更多」收起 —— 用户已经做出了选择，
- * 面板还留在原地会一直占掉一块主图高度；点长周期（季/年）同理。
- */
+/** 分组多选提交成功：按钮随即变成「已自选」 */
+function onWatchAdded() {
+  watching.value = true
+}
+
+/** 切周期：取数留在页面，图表组件只回报「点了哪个 id」 */
 function switchPeriod(p: KlinePeriod) {
   mode.value = 'kline'
   fiveDay.value = false
   period.value = p
-  moreOpen.value = false
   loadChart()
 }
 
@@ -404,12 +377,8 @@ const title = computed(() => {
         </div>
       </section>
 
-      <!-- ② 图表卡：主图选项独占一行；主图 · 副图 · 时间轴居左，五档居右
-           五档已并入图表组件，与 K 线同屏才能相互印证；指数没有委托簿，
-           组件不渲染五档，改由 side 插槽放涨跌家数分布。 -->
       <section class="chart-card">
         <KLineChart
-          v-model:more-open="moreOpen"
           :mode="mode"
           :period="period"
           :five-day="fiveDay"
@@ -417,29 +386,13 @@ const title = computed(() => {
           :minutes="minutes"
           :bars="bars"
           :prev-close="quote.prev_close ?? 0"
-          :tabs="MAIN_TABS"
-          :more-periods="MORE_CHIPS"
           :depth="depth"
           :is-index="isIndex"
           :main-height="150"
           :sub-height="64"
           @select="onChartSelect"
           @update:sub="sub = $event"
-        >
-          <template #side>
-            <div class="dist">
-              <div class="dist-title">涨跌分布</div>
-              <div class="dist-line"><span class="up">涨</span><b class="tabular">{{ distribution.up }}</b></div>
-              <div class="dist-line"><span class="flat">平</span><b class="tabular">{{ distribution.flat }}</b></div>
-              <div class="dist-line"><span class="down">跌</span><b class="tabular">{{ distribution.down }}</b></div>
-              <div class="dbar">
-                <i class="seg up" :style="{ width: distribution.upPct + '%' }"></i>
-                <i class="seg flat" :style="{ width: distribution.flatPct + '%' }"></i>
-                <i class="seg down" :style="{ width: distribution.downPct + '%' }"></i>
-              </div>
-            </div>
-          </template>
-        </KLineChart>
+        />
       </section>
 
       <!-- ④ 资料区：个股是题材与规则，指数是成分股及其涨跌 -->
@@ -478,7 +431,13 @@ const title = computed(() => {
 
       <!-- ⑤ 交易条：仅个股，指数不可交易不摆无效按钮 -->
       <section v-if="!isIndex" class="actions">
-        <button class="act-watch" :class="{ on: watching }" :disabled="watchBusy" @click="toggleWatch">
+        <button
+          class="act-watch"
+          :class="{ on: watching }"
+          :disabled="watchBusy"
+          v-on="watchLongPress.handlers"
+          @click="watchLongPress.guardClick(toggleWatch)()"
+        >
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
             stroke-linecap="round" stroke-linejoin="round">
             <path d="M12 3.6l2.6 5.4 5.9.8-4.3 4.2 1 5.9-5.2-2.8-5.2 2.8 1-5.9L3.5 9.8l5.9-.8z" />
@@ -494,7 +453,13 @@ const title = computed(() => {
 
     <!-- 指数不可交易：底栏只保留加自选 -->
     <section v-if="isIndex && quote" class="actions">
-      <button class="act-watch wide" :class="{ on: watching }" :disabled="watchBusy" @click="toggleWatch">
+      <button
+        class="act-watch wide"
+        :class="{ on: watching }"
+        :disabled="watchBusy"
+        v-on="watchLongPress.handlers"
+        @click="watchLongPress.guardClick(toggleWatch)()"
+      >
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
           stroke-linecap="round" stroke-linejoin="round">
           <path d="M12 3.6l2.6 5.4 5.9.8-4.3 4.2 1 5.9-5.2-2.8-5.2 2.8 1-5.9L3.5 9.8l5.9-.8z" />
@@ -502,6 +467,14 @@ const title = computed(() => {
         <span>{{ watching ? '取消自选' : '加自选' }}</span>
       </button>
     </section>
+
+    <!-- 长按「加自选」弹出的分组多选（走全局底部抽屉） -->
+    <WatchAddSheet
+      v-model:show="addSheetOpen"
+      :code="code"
+      :name="quote?.name"
+      @added="onWatchAdded"
+    />
 
     <TradeSheet
       v-if="!isIndex && quote"

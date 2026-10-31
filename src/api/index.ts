@@ -154,6 +154,10 @@ export const watchApi = {
       { name },
     ),
 
+  /** 拖拽排序：ids 按新顺序提交，服务端按下标重写 sort */
+  reorderGroups: (ids: number[]) =>
+    alovaInstance.Patch<{ ok: boolean; updated: number }>('/api/watch/groups/order', { ids }),
+
   deleteGroup: (id: number) =>
     alovaInstance.Delete<{ ok: boolean; moved: number; fallback_group_id: number }>(`/api/watch/groups/${id}`),
 
@@ -162,14 +166,29 @@ export const watchApi = {
       params: group_id ? { group_id } : {},
     }),
 
+  /**
+   * 加入自选。不传 group_id 时服务端放进第一个分组 ——
+   * 「默认加入第一个分组」落在这里，客户端不需要先查分组列表再决定。
+   */
   add: (code: string, group_id?: number) =>
-    alovaInstance.Post<{ ok: boolean; watching: boolean; group_id: number; moved: boolean }>('/api/watch/items', {
-      code,
-      group_id,
-    }),
+    alovaInstance.Post<{ ok: boolean; watching: boolean; group_id: number; created: boolean }>(
+      '/api/watch/items',
+      { code, group_id },
+    ),
 
-  remove: (code: string) => alovaInstance.Delete<{ ok: boolean; watching: boolean }>(`/api/watch/items/${code}`),
+  /** 一次加入多个分组（长按加自选的多选提交），服务端整批成功或整批失败 */
+  addBatch: (code: string, group_ids: number[]) =>
+    alovaInstance.Post<{ ok: boolean; watching: boolean; group_ids: number[] }>(
+      '/api/watch/items/batch',
+      { code, group_ids },
+    ),
 
+  remove: (code: string) =>
+    alovaInstance.Delete<{ ok: boolean; watching: boolean; removed: number }>(`/api/watch/items/${code}`),
+
+  /** 是否已在自选，以及它在哪些分组里（长按多选抽屉据此回显） */
   status: (code: string) =>
-    alovaInstance.Get<{ code: string; watching: boolean; group_id: number }>(`/api/watch/status/${code}`),
+    alovaInstance.Get<{ code: string; watching: boolean; group_ids: number[] }>(
+      `/api/watch/status/${code}`,
+    ),
 }

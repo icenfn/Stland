@@ -11,17 +11,16 @@
  * 就换了副样子」，用户要重新学一遍布局。现在两者同构：
  *
  *   ① 价格头    名称/代码 + 大号现价 + 涨跌额/涨跌幅 + 关键指标网格
- *   ② 图表卡    分时 / 5·15·30·60 分 / 日K，副图可切 成交量·MACD
- *   ③ 盘口位    个股是五档买卖盘；指数放涨跌家数分布（指数没有委托簿，
- *               但这一格必须存在，否则两页的纵向节奏就断了）
+ *   ② 图表卡    周期选项与个股完全一致（分时/五日/日K/周K/月K/更多），
+ *               由 K 线组件统一定义；指数没有委托簿，组件不渲染五档栏，
+ *               主副图横向铺满整行
  *   ④ 资料区    题材/板块/简介；指数额外列出成分股及其涨跌
  *   ⑤ 交易条    仅个股出现（指数不可交易，不摆一个点了会报错的按钮）
  *
  * 版式说明：价格与涨跌是视觉焦点，指标网格紧跟在价格下面。
- * 本轮两处调整：
- *  · 图表占满宽度单独成块，涨跌分布移到图表下方 —— 上下关系比左右并排更好读，
- *    并排时窄栏把 K 线挤得只剩一半宽度；
- *  · 撤掉「资料」卡：里面对指数没有任何有效信息（题材/概念/说明都是个股字段）。
+ * 图表宽度：指数不渲染右侧五档栏，主副图直接铺满整行 ——
+ * 上一版在右栏塞了「涨跌分布」，把 K 线挤到只剩一半宽度，
+ * 而涨跌家数本来就在成分股统计里能读到。
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -32,12 +31,15 @@ import type {
   DetailQuote,
   IndexMember,
   IndexQuote,
+  KlinePeriod,
   MinutePoint,
   Quote,
   StockMeta,
 } from '@/api/types'
 import AppBar from '@/components/AppBar.vue'
 import KLineChart from '@/components/KLineChart.vue'
+import WatchAddSheet from '@/components/WatchAddSheet.vue'
+import { useLongPress } from '@/composables/useLongPress'
 import type { SubKind } from '@/components/MiniChart.vue'
 import TradeSheet from '@/components/TradeSheet.vue'
 import { fmtAmount, fmtPct, fmtPrice, fmtVolume, trendClass } from '@/utils/format'
@@ -62,7 +64,7 @@ const loading = ref(true)
 
 /** 主图类型与周期：分时不带周期，K 线才带 */
 const mode = ref<'minute' | 'kline'>('minute')
-const period = ref('5min')
+const period = ref<KlinePeriod>('day')
 /**
  * 分时的「当日 / 五日」。
  *
@@ -71,7 +73,7 @@ const period = ref('5min')
  * 现在与个股完全对齐 —— 分时拿 days=1 的当日序列，五日拿 days=5。
  */
 const fiveDay = ref(false)
-/** 副图：无 / 成交量 / MACD —— 纯展示切换，不产生请求 */
+/** 副图：成交量 / MACD / KDJ / 量比 / 分时博弈 —— 纯展示切换，不产生请求 */
 const sub = ref<SubKind>('macd')
 
 const sheetShow = ref(false)
@@ -79,6 +81,13 @@ const sheetSide = ref<'buy' | 'sell'>('buy')
 
 const watching = ref(false)
 const watchBusy = ref(false)
+/** 长按加自选：弹出分组多选抽屉（与个股页同一套交互） */
+const addSheetOpen = ref(false)
+
+const watchLongPress = useLongPress(() => {
+  if (watching.value || watchBusy.value) return
+  addSheetOpen.value = true
+})
 
 const pctClass = computed(() => trendClass(quote.value?.change_pct ?? 0))
 const priceClass = computed(() => trendClass(quote.value?.change ?? 0))
@@ -107,16 +116,6 @@ const statRows = computed(() => {
     )
   }
   return rows
-})
-
-/** 指数没有委托簿，这一格改放涨跌家数 —— 与五档同宽同位，保持两页节奏一致 */
-const distribution = computed(() => {
-  const q = quote.value
-  const up = q?.up ?? 0
-  const down = q?.down ?? 0
-  const flat = q?.flat ?? 0
-  const total = Math.max(1, up + down + flat)
-  return { up, down, flat, upPct: (up / total) * 100, flatPct: (flat / total) * 100, downPct: (down / total) * 100 }
 })
 
 /**
@@ -237,34 +236,14 @@ async function toggleWatch() {
   }
 }
 
-/** 传给共用图表组件的主周期栏：指数常用周期，低频项收进「更多」 */
-const MAIN_TABS = [
-  { id: 'minute', label: '分时' },
-  { id: 'fiveDay', label: '五日' },
-  { id: '5min', label: '5分' },
-  { id: '15min', label: '15分' },
-  { id: '30min', label: '30分' },
-  { id: 'day', label: '日K' },
-]
-/** 「更多」里平铺的低频周期 */
-const MORE_CHIPS = [
-  { id: '1min', label: '1分' },
-  { id: '60min', label: '60分' },
-  { id: '120min', label: '120分' },
-  { id: 'week', label: '周K' },
-  { id: 'month', label: '月K' },
-  { id: 'quarter', label: '季K' },
-  { id: 'year', label: '年K' },
-]
-
 /** 组件只回报点了哪个 id，取数仍留在本页 */
 function onChartSelect(id: string): void {
   if (id === 'minute') return switchMinute()
   if (id === 'fiveDay') return switchFiveDay()
-  switchPeriod(id)
+  switchPeriod(id as KlinePeriod)
 }
 
-function switchPeriod(p: string) {
+function switchPeriod(p: KlinePeriod) {
   mode.value = 'kline'
   period.value = p
   fiveDay.value = false
@@ -365,9 +344,9 @@ const title = computed(() => {
         </div>
       </section>
 
-      <!-- ② 图表卡：主图选项 / 主图·副图·时间轴 / 右侧涨跌分布
-           指数没有委托簿，所以右侧窄栏放涨跌家数分布，由组件的 side 插槽塞入；
-           个股那边同一位置则渲染五档，两页纵向节奏保持一致。 -->
+      <!-- ② 图表卡：主图选项、主副图、时间轴都由 K 线组件负责，
+           指数没有委托簿，组件不渲染五档栏，主副图因此横向铺满整行。
+           涨跌家数已经在下方「涨跌分布」统计里给出，不再塞进图右侧的窄栏。 -->
       <section class="chart-card">
         <KLineChart
           :mode="mode"
@@ -377,28 +356,12 @@ const title = computed(() => {
           :minutes="minutes"
           :bars="bars"
           :prev-close="quote.prev_close ?? 0"
-          :tabs="MAIN_TABS"
-          :more-periods="MORE_CHIPS"
           :is-index="true"
-          :main-height="150"
-          :sub-height="64"
+          :main-height="176"
+          :sub-height="66"
           @select="onChartSelect"
           @update:sub="sub = $event"
-        >
-          <template #side>
-            <div class="dist">
-              <div class="dist-title">涨跌分布</div>
-              <div class="dist-line"><span class="up">涨</span><b class="tabular">{{ distribution.up }}</b></div>
-              <div class="dist-line"><span class="flat">平</span><b class="tabular">{{ distribution.flat }}</b></div>
-              <div class="dist-line"><span class="down">跌</span><b class="tabular">{{ distribution.down }}</b></div>
-              <div class="dbar">
-                <i class="seg up" :style="{ width: distribution.upPct + '%' }"></i>
-                <i class="seg flat" :style="{ width: distribution.flatPct + '%' }"></i>
-                <i class="seg down" :style="{ width: distribution.downPct + '%' }"></i>
-              </div>
-            </div>
-          </template>
-        </KLineChart>
+        />
       </section>
 
       <section v-if="isIndex && members.length" class="card info-card">
@@ -424,7 +387,13 @@ const title = computed(() => {
 
       <!-- ⑤ 交易条：仅个股，指数不可交易不摆无效按钮 -->
       <section v-if="!isIndex" class="actions">
-        <button class="act-watch" :class="{ on: watching }" :disabled="watchBusy" @click="toggleWatch">
+        <button
+          class="act-watch"
+          :class="{ on: watching }"
+          :disabled="watchBusy"
+          v-on="watchLongPress.handlers"
+          @click="watchLongPress.guardClick(toggleWatch)()"
+        >
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
             stroke-linecap="round" stroke-linejoin="round">
             <path d="M12 3.6l2.6 5.4 5.9.8-4.3 4.2 1 5.9-5.2-2.8-5.2 2.8 1-5.9L3.5 9.8l5.9-.8z" />
@@ -440,7 +409,13 @@ const title = computed(() => {
 
     <!-- 指数不可交易：底栏只保留加自选 -->
     <section v-if="isIndex && quote" class="actions">
-      <button class="act-watch wide" :class="{ on: watching }" :disabled="watchBusy" @click="toggleWatch">
+      <button
+        class="act-watch wide"
+        :class="{ on: watching }"
+        :disabled="watchBusy"
+        v-on="watchLongPress.handlers"
+        @click="watchLongPress.guardClick(toggleWatch)()"
+      >
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
           stroke-linecap="round" stroke-linejoin="round">
           <path d="M12 3.6l2.6 5.4 5.9.8-4.3 4.2 1 5.9-5.2-2.8-5.2 2.8 1-5.9L3.5 9.8l5.9-.8z" />
@@ -457,6 +432,13 @@ const title = computed(() => {
       @submitted="onSubmitted"
     />
   </div>
+    <!-- 长按「加自选」弹出的分组多选（走全局底部抽屉） -->
+    <WatchAddSheet
+      v-model:show="addSheetOpen"
+      :code="code"
+      :name="quote?.name"
+      @added="watching = true"
+    />
 </template>
 
 <style scoped>
@@ -594,101 +576,15 @@ const title = computed(() => {
 }
 
 .chart-card {
-  flex: 3 1 0;
   min-width: 0;
   padding: 8px 0 6px;
 }
-
-.dist-card {
-  margin: 6px 12px 0;
-  padding: 10px 12px;
-  border-radius: var(--r-md);
-  background: var(--c-card);
-  border: 1px solid var(--c-line);
-}
-
-.dist-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  margin-bottom: 8px;
-}
-
-.dist-title {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--c-text-2);
-}
-
-/* 五档：一行一档，价格列定宽右对齐，量能列右对齐便于纵向比对 */
 
 .empty {
   font-size: 11px;
   color: var(--c-text-3);
   text-align: center;
   padding: 18px 0;
-}
-
-/* 指数涨跌分布：数字在上，比例条在中，图例在下 —— 与五档占同一格位 */
-.dist {
-  display: flex;
-  justify-content: space-around;
-  align-items: baseline;
-  margin-bottom: 6px;
-}
-
-.dnum {
-  font-size: 15px;
-  font-weight: 700;
-  color: var(--c-text);
-}
-
-.dnum.up {
-  color: var(--c-up);
-}
-.dnum.down {
-  color: var(--c-down);
-}
-.dnum.flat {
-  color: var(--c-flat);
-}
-
-.dbar {
-  display: flex;
-  height: 6px;
-  border-radius: 4px;
-  overflow: hidden;
-  background: rgba(255, 255, 255, 0.06);
-}
-
-.dbar .seg {
-  display: block;
-  height: 100%;
-}
-
-.dbar .seg.up {
-  background: var(--c-up);
-}
-.dbar .seg.down {
-  background: var(--c-down);
-}
-.dbar .seg.flat {
-  background: var(--c-flat);
-}
-
-.dlegend {
-  display: flex;
-  justify-content: space-between;
-  margin-top: 6px;
-  font-size: 9.5px;
-  color: var(--c-text-3);
-}
-
-.dlegend .up {
-  color: var(--c-up);
-}
-.dlegend .down {
-  color: var(--c-down);
 }
 
 /* ---------- ④ 资料 / 成分 ---------- */
