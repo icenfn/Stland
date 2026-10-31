@@ -88,17 +88,6 @@ export function fmtDateTime(ts: number): string {
   return `${d.getMonth() + 1}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
-/** 相对时间：刚刚 / 12 秒前 / 3 分钟前（用于「行情更新于」提示） */
-export function fmtAgo(ts: number, now = Date.now()): string {
-  const ms = toMillis(ts)
-  if (!ms) return '--'
-  const diff = Math.max(0, Math.round((now - ms) / 1000))
-  if (diff < 2) return '刚刚'
-  if (diff < 60) return `${diff} 秒前`
-  if (diff < 3600) return `${Math.floor(diff / 60)} 分钟前`
-  return fmtDateTime(ts)
-}
-
 /** 股票代码 → 展示用板块标签 */
 export function boardLabel(code: string): string {
   if (code.startsWith('688')) return '科创'

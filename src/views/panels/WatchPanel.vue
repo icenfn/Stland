@@ -20,6 +20,7 @@ import { useRouter } from 'vue-router'
 import { watchApi } from '@/api'
 import type { WatchGroup, WatchItem } from '@/api/types'
 import { fmtAmount, fmtPct, fmtPrice, trendClass } from '@/utils/format'
+import BaseSheet from '@/components/BaseSheet.vue'
 
 const router = useRouter()
 
@@ -193,7 +194,15 @@ onMounted(refresh)
       >
         {{ g.name }}<span class="gcount">{{ g.count }}</span>
       </button>
-      <button class="gchip add" @click="openManage">＋</button>
+      <!-- 分组管理：用铅笔表示「编辑」，比「＋」更贴近它的真实作用
+           （点开是管理已有分组，包括重命名与删除，不只是新增） -->
+      <button class="gchip add" aria-label="分组管理" @click="openManage">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+          stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4 20h4L19.5 8.5a2.12 2.12 0 0 0-3-3L5 17v3z" />
+          <path d="M14.5 6.5l3 3" />
+        </svg>
+      </button>
     </div>
 
     <div v-if="error" class="empty">{{ error }}</div>
@@ -231,60 +240,56 @@ onMounted(refresh)
       </div>
     </div>
 
-    <!-- 分组管理弹窗 -->
-    <transition name="fade">
-      <div v-if="manageOpen" class="m-mask" @click.self="manageOpen = false">
-        <div class="m-sheet">
-          <div class="m-head">
-            <span class="m-title">分组管理</span>
-            <button class="m-close" aria-label="关闭" @click="manageOpen = false">✕</button>
-          </div>
-          <p class="m-tip">删除分组不会删除其中的股票，它们会回到默认分组。</p>
+    <!-- 分组管理：走共用底部抽屉，手势下滑即可关闭，外壳与下单抽屉保持一致 -->
+    <BaseSheet v-model:show="manageOpen" max-height="80vh">
+      <div class="m-head">
+        <span class="m-title">分组管理</span>
+        <button class="m-close" aria-label="关闭" @click="manageOpen = false">✕</button>
+      </div>
+      <p class="m-tip">删除分组不会删除其中的股票，它们会回到默认分组。</p>
 
-          <div class="m-list">
-            <div v-for="g in groups" :key="g.id" class="m-row">
-              <template v-if="editingId === g.id">
-                <input
-                  v-model="editName"
-                  class="m-input"
-                  maxlength="12"
-                  placeholder="分组名"
-                  @keyup.enter="commitRename"
-                />
-                <button class="m-ok" :disabled="busy" @click="commitRename">保存</button>
-                <button class="m-cancel" @click="cancelRename">取消</button>
-              </template>
-              <template v-else>
-                <span class="m-name">{{ g.name }}</span>
-                <span class="m-count">{{ g.count }} 只</span>
-                <button class="m-act" :disabled="busy" @click="startRename(g)">重命名</button>
-                <button
-                  v-if="canDelete"
-                  class="m-act danger"
-                  :disabled="busy"
-                  @click="removeGroup(g)"
-                >
-                  删除
-                </button>
-              </template>
-            </div>
-          </div>
-
-          <div class="m-new">
+      <div class="m-list">
+        <div v-for="g in groups" :key="g.id" class="m-row">
+          <template v-if="editingId === g.id">
             <input
-              v-model="newName"
-              class="m-input grow"
+              v-model="editName"
+              class="m-input"
               maxlength="12"
-              placeholder="新分组名称"
-              @keyup.enter="createGroup"
+              placeholder="分组名"
+              @keyup.enter="commitRename"
             />
-            <button class="btn btn-primary m-add" :disabled="busy || !newName.trim()" @click="createGroup">
-              新建
+            <button class="m-ok" :disabled="busy" @click="commitRename">保存</button>
+            <button class="m-cancel" @click="cancelRename">取消</button>
+          </template>
+          <template v-else>
+            <span class="m-name">{{ g.name }}</span>
+            <span class="m-count">{{ g.count }} 只</span>
+            <button class="m-act" :disabled="busy" @click="startRename(g)">重命名</button>
+            <button
+              v-if="canDelete"
+              class="m-act danger"
+              :disabled="busy"
+              @click="removeGroup(g)"
+            >
+              删除
             </button>
-          </div>
+          </template>
         </div>
       </div>
-    </transition>
+
+      <div class="m-new">
+        <input
+          v-model="newName"
+          class="m-input grow"
+          maxlength="12"
+          placeholder="新分组名称"
+          @keyup.enter="createGroup"
+        />
+        <button class="btn btn-primary m-add" :disabled="busy || !newName.trim()" @click="createGroup">
+          新建
+        </button>
+      </div>
+    </BaseSheet>
   </div>
 </template>
 
@@ -455,25 +460,6 @@ onMounted(refresh)
 }
 
 /* 分组管理弹窗 */
-.m-mask {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.55);
-  z-index: 80;
-  display: flex;
-  align-items: flex-end;
-}
-.m-sheet {
-  width: 100%;
-  max-height: 80vh;
-  overflow-y: auto;
-  background: var(--c-bg-elevated);
-  border-radius: var(--r-xl) var(--r-xl) 0 0;
-  border-top: 1px solid var(--c-line);
-  padding: 14px 16px calc(16px + var(--safe-bottom));
-  box-sizing: border-box;
-  box-shadow: 0 -12px 40px rgba(0, 0, 0, 0.45);
-}
 .m-head {
   display: flex;
   align-items: center;

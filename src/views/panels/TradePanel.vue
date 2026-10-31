@@ -17,11 +17,10 @@
  */
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { useIntervalFn } from '@vueuse/core'
 import { accountApi } from '@/api'
 import type { AccountSummary, PositionItem } from '@/api/types'
 import { useAuth } from '@/stores/auth'
-import { fmtAgo, fmtMoney, fmtPct, fmtPrice, fmtSignedMoney, trendClass } from '@/utils/format'
+import { fmtMoney, fmtPct, fmtPrice, fmtSignedMoney, trendClass } from '@/utils/format'
 
 const router = useRouter()
 const auth = useAuth()
@@ -29,7 +28,6 @@ const auth = useAuth()
 const summary = ref<AccountSummary | null>(null)
 const positions = ref<PositionItem[]>([])
 const error = ref('')
-const updatedAt = ref(0)
 const loading = ref(false)
 
 const asset = computed(() => summary.value?.asset)
@@ -68,16 +66,11 @@ async function refresh() {
     error.value = reason?.message ?? '加载失败，请稍后重试'
   } else {
     error.value = ''
-    updatedAt.value = Date.now()
   }
   loading.value = false
 }
 
-// 未登录时接口必然 401，这里直接跳过，避免无意义的错误提示
-useIntervalFn(() => {
-  if (auth.state.user) void refresh()
-}, 4000)
-
+// 与其他面板一致：只在进入页面时拉一次，不再挂定时器轮询
 onMounted(refresh)
 </script>
 
@@ -134,7 +127,6 @@ onMounted(refresh)
       <section class="holdings">
         <div class="hold-head">
           <span class="card-h">持仓 {{ positions.length }}</span>
-          <span class="text-xs">{{ updatedAt ? fmtAgo(updatedAt) : '' }}</span>
         </div>
 
         <div v-if="error" class="empty">{{ error }}</div>
@@ -167,14 +159,6 @@ onMounted(refresh)
               {{ fmtSignedMoney(p.unrealized_pnl ?? 0) }}
             </div>
           </div>
-        </div>
-      </section>
-
-      <section class="px">
-        <div class="card menu">
-          <button class="menu-item" @click="router.push('/orders')">
-            <span>委托与成交</span><span class="arrow">›</span>
-          </button>
         </div>
       </section>
 
@@ -301,25 +285,6 @@ onMounted(refresh)
 }
 .hs {
   margin-top: 2px;
-}
-.menu {
-  padding: 0;
-  overflow: hidden;
-}
-.menu-item {
-  width: 100%;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  background: none;
-  border: none;
-  color: var(--c-text);
-  font-size: 14px;
-  padding: 14px;
-  cursor: pointer;
-}
-.arrow {
-  color: var(--c-text-3);
 }
 .disclaimer {
   font-size: 10px;

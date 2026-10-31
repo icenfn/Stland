@@ -37,7 +37,7 @@ import type {
   StockMeta,
 } from '@/api/types'
 import AppBar from '@/components/AppBar.vue'
-import MiniChart from '@/components/MiniChart.vue'
+import KLineChart from '@/components/KLineChart.vue'
 import TradeSheet from '@/components/TradeSheet.vue'
 import { fmtAmount, fmtPct, fmtPrice, fmtVolume, trendClass } from '@/utils/format'
 
@@ -225,6 +225,31 @@ async function toggleWatch() {
   }
 }
 
+/** 传给共用图表组件的主周期栏：指数常用周期，低频项收进「更多」 */
+const MAIN_TABS = [
+  { id: 'minute', label: '分时' },
+  { id: '5min', label: '5分' },
+  { id: '15min', label: '15分' },
+  { id: '30min', label: '30分' },
+  { id: 'day', label: '日K' },
+]
+/** 「更多」里平铺的低频周期 */
+const MORE_CHIPS = [
+  { id: '1min', label: '1分' },
+  { id: '60min', label: '60分' },
+  { id: '120min', label: '120分' },
+  { id: 'week', label: '周K' },
+  { id: 'month', label: '月K' },
+  { id: 'quarter', label: '季K' },
+  { id: 'year', label: '年K' },
+]
+
+/** 组件只回报点了哪个 id，取数仍留在本页 */
+function onChartSelect(id: string): void {
+  if (id === 'minute') return switchMinute()
+  switchPeriod(id)
+}
+
 function switchPeriod(p: string) {
   mode.value = 'kline'
   period.value = p
@@ -319,34 +344,20 @@ const title = computed(() => {
       <!-- ② 图表卡：主图 + 可切换副图，与盘口/分布窄栏同屏对照 -->
       <section class="chart-row">
         <div class="chart-card">
-          <div class="chart-tabs">
-            <button class="ctab" :class="{ on: mode === 'minute' }" @click="switchMinute">分时</button>
-            <button class="ctab" :class="{ on: mode === 'kline' && period === '5min' }" @click="switchPeriod('5min')">5分</button>
-            <button class="ctab" :class="{ on: mode === 'kline' && period === '15min' }" @click="switchPeriod('15min')">15分</button>
-            <button class="ctab" :class="{ on: mode === 'kline' && period === '30min' }" @click="switchPeriod('30min')">30分</button>
-            <button class="ctab" :class="{ on: mode === 'kline' && period === '60min' }" @click="switchPeriod('60min')">60分</button>
-            <button class="ctab" :class="{ on: mode === 'kline' && period === 'day' }" @click="switchPeriod('day')">日K</button>
-          </div>
-          <div class="chart-tabs sub-tabs">
-            <span class="sub-label">副图</span>
-            <button class="ctab s" :class="{ on: sub === 'macd' }" @click="sub = 'macd'">MACD</button>
-            <button class="ctab s" :class="{ on: sub === 'volume' }" @click="sub = 'volume'">成交量</button>
-            <button class="ctab s" :class="{ on: sub === 'ratio' }" @click="sub = 'ratio'">量比</button>
-          </div>
-
-          <MiniChart
-            v-if="mode === 'minute'"
+          <KLineChart
+            :mode="mode"
+            :period="period"
+            :five-day="false"
+            :sub="sub"
             :minutes="minutes"
-            :prev-close="quote.prev_close ?? 0"
-            :sub="sub"
-            :height="214"
-          />
-          <MiniChart
-            v-else
-            mode="kline"
             :bars="bars"
-            :sub="sub"
-            :height="214"
+            :prev-close="quote.prev_close ?? 0"
+            :tabs="MAIN_TABS"
+            :more-periods="MORE_CHIPS"
+            :main-height="150"
+            :sub-height="64"
+            @select="onChartSelect"
+            @update:sub="sub = $event"
           />
         </div>
 
@@ -587,58 +598,7 @@ const title = computed(() => {
   color: var(--c-text-2);
 }
 
-.chart-tabs {
-  display: flex;
-  gap: 3px;
-  padding: 0 2px 6px;
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-.chart-tabs::-webkit-scrollbar {
-  display: none;
-}
-
-.ctab {
-  flex: 0 0 auto;
-  font-size: 10.5px;
-  padding: 3px 7px;
-  border-radius: 7px;
-  border: none;
-  background: transparent;
-  color: var(--c-text-3);
-  font-family: inherit;
-}
-
-.ctab.on {
-  color: var(--c-brand);
-  background: rgba(232, 56, 61, 0.12);
-  font-weight: 600;
-}
-
-.sub-tabs {
-  padding-bottom: 4px;
-  align-items: center;
-}
-
-.sub-label {
-  font-size: 10px;
-  color: var(--c-text-3);
-  padding-right: 2px;
-  flex: 0 0 auto;
-}
-
-.ctab.s {
-  font-size: 10px;
-  padding: 2px 5px;
-  border-radius: 6px;
-}
-
 /* 五档：一行一档，价格列定宽右对齐，量能列右对齐便于纵向比对 */
-
-
-
-
-
 
 .empty {
   font-size: 11px;

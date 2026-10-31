@@ -37,7 +37,7 @@ import type {
   StockMeta,
 } from '@/api/types'
 import AppBar from '@/components/AppBar.vue'
-import MiniChart from '@/components/MiniChart.vue'
+import KLineChart from '@/components/KLineChart.vue'
 import TradeSheet from '@/components/TradeSheet.vue'
 import { fmtAmount, fmtPct, fmtPrice, fmtVolume, trendClass } from '@/utils/format'
 
@@ -78,6 +78,25 @@ const moreOpen = ref(false)
  * 手指点不准，也看不出当前选中哪一个。分/周/月这些「偶尔才看一眼」的周期
  * 收进二级平铺，一次点击可见，比横向滚动去找更符合手机的触摸尺寸。
  */
+/** 传给共用图表组件的主周期栏：分时 / 五日 / 日 / 周 / 月，低频项收进「更多」 */
+const MAIN_TABS = [
+  { id: 'minute', label: '分时' },
+  { id: 'fiveDay', label: '五日' },
+  { id: 'day', label: '日K' },
+  { id: 'week', label: '周K' },
+  { id: 'month', label: '月K' },
+]
+
+/**
+ * 图表组件只回报「用户点了哪个 id」，由页面决定走分时还是 K 线接口 ——
+ * 取数留在页面里，组件才能被个股与指数共享。
+ */
+function onChartSelect(id: string): void {
+  if (id === 'minute') return switchMinute()
+  if (id === 'fiveDay') return switchFiveDay()
+  switchPeriod(id as KlinePeriod)
+}
+
 const MORE_PERIODS: Array<{ v: KlinePeriod; label: string }> = [
   { v: '1min', label: '1分' },
   { v: '5min', label: '5分' },
@@ -90,7 +109,8 @@ const MORE_PERIODS: Array<{ v: KlinePeriod; label: string }> = [
 ]
 
 /** 当前周期是否属于「更多」里的那一批：用于把首行「更多」按钮点亮 */
-const inMore = computed(() => MORE_PERIODS.some((p) => p.v === period.value))
+/** 「更多」里平铺的低频周期，交给共用图表组件渲染 */
+const MORE_CHIPS = MORE_PERIODS.map((p) => ({ id: p.v, label: p.label }))
 
 /**
  * 当前图表里出现了哪些非连续竞价时段。
@@ -99,21 +119,6 @@ const inMore = computed(() => MORE_PERIODS.some((p) => p.v === period.value))
  * 真正需要提示用户的三种：盘前、集合竞价、盘后 —— 午休和休市本来就没有成交，
  * 不需要额外解释。有值时才渲染图例，否则图表区保持干净。
  */
-const SEGMENT_TEXT: Record<string, string> = {
-  pre: '盘前',
-  auction: '集合竞价',
-  post: '盘后',
-}
-
-const segmentsPresent = computed(() => {
-  const src = mode.value === 'minute' ? minutes.value : bars.value
-  const seen = new Set<string>()
-  for (const item of src as Array<{ segment?: string }>) {
-    const seg = item.segment
-    if (seg && SEGMENT_TEXT[seg]) seen.add(seg)
-  }
-  return ['pre', 'auction', 'post'].filter((k) => seen.has(k))
-})
 
 const sheetShow = ref(false)
 const sheetSide = ref<'buy' | 'sell'>('buy')
@@ -412,88 +417,20 @@ const title = computed(() => {
       <!-- ② 图表卡：主图 + 可切换副图，与盘口/分布窄栏同屏对照 -->
       <section class="chart-row">
         <div class="chart-card">
-          <!-- 主图周期：落在主图之上，先选「看什么周期」，再看图 -->
-          <div class="chart-tabs">
-            <button
-              class="ctab"
-              :class="{ on: mode === 'minute' && !fiveDay }"
-              @click="switchMinute"
-            >
-              分时
-            </button>
-            <button
-              class="ctab"
-              :class="{ on: mode === 'minute' && fiveDay }"
-              @click="switchFiveDay"
-            >
-              五日
-            </button>
-            <button class="ctab" :class="{ on: mode === 'kline' && period === 'day' }" @click="switchPeriod('day')">
-              日K
-            </button>
-            <button class="ctab" :class="{ on: mode === 'kline' && period === 'week' }" @click="switchPeriod('week')">
-              周K
-            </button>
-            <button class="ctab" :class="{ on: mode === 'kline' && period === 'month' }" @click="switchPeriod('month')">
-              月K
-            </button>
-            <button
-              class="ctab more"
-              :class="{ on: mode === 'kline' && inMore, open: moreOpen }"
-              @click="moreOpen = !moreOpen"
-            >
-              更多<i class="caret">{{ moreOpen ? '▴' : '▾' }}</i>
-            </button>
-          </div>
-
-          <!-- 更多：平铺低频周期，一次点击可见，不做横向滚动去找 -->
-          <div v-if="moreOpen" class="more-grid">
-            <button
-              v-for="p in MORE_PERIODS"
-              :key="p.v"
-              class="mchip"
-              :class="{ on: mode === 'kline' && period === p.v }"
-              @click="switchPeriod(p.v)"
-            >
-              {{ p.label }}
-            </button>
-          </div>
-
-          <!-- 时段图例：只在出现盘前/集合竞价/盘后时显示，说明底色含义 -->
-          <div v-if="segmentsPresent.length" class="seg-legend">
-            <span v-for="k in segmentsPresent" :key="k" class="seg-item" :class="'seg-' + k">
-              <i class="dot" />{{ SEGMENT_TEXT[k] }}
-            </span>
-          </div>
-
-          <!-- 主图：单独一块 canvas，副图选项条才能插在它与副图之间 -->
-          <MiniChart
-            v-if="mode === 'minute'"
-            part="main"
-            :minutes="minutes"
-            :prev-close="quote.prev_close ?? 0"
-            :multi-day="fiveDay"
-            :height="166"
-          />
-          <MiniChart v-else part="main" mode="kline" :bars="bars" :height="166" />
-
-          <!-- 副图选项：落在副图之上，先选指标再看曲线 -->
-          <div class="chart-tabs sub-tabs">
-            <span class="sub-label">副图</span>
-            <button class="ctab s" :class="{ on: sub === 'macd' }" @click="sub = 'macd'">MACD</button>
-            <button class="ctab s" :class="{ on: sub === 'volume' }" @click="sub = 'volume'">成交量</button>
-            <button class="ctab s" :class="{ on: sub === 'ratio' }" @click="sub = 'ratio'">量比</button>
-          </div>
-
-          <MiniChart
-            v-if="mode === 'minute'"
-            part="sub"
-            :minutes="minutes"
-            :prev-close="quote.prev_close ?? 0"
+          <KLineChart
+            v-model:more-open="moreOpen"
+            :mode="mode"
+            :period="period"
+            :five-day="fiveDay"
             :sub="sub"
-            :height="66"
+            :minutes="minutes"
+            :bars="bars"
+            :prev-close="quote.prev_close ?? 0"
+            :tabs="MAIN_TABS"
+            :more-periods="MORE_CHIPS"
+            @select="onChartSelect"
+            @update:sub="sub = $event"
           />
-          <MiniChart v-else part="sub" mode="kline" :bars="bars" :sub="sub" :height="66" />
         </div>
 
         <!-- ③ 盘口位：个股五档 / 指数涨跌分布，同一格位 -->
@@ -607,29 +544,6 @@ const title = computed(() => {
 </template>
 
 <style scoped>
-.seg-legend {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 2px 12px 6px;
-  font-size: 11px;
-  color: var(--c-text-2);
-}
-.seg-item {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  white-space: nowrap;
-}
-.seg-item .dot {
-  width: 9px;
-  height: 9px;
-  border-radius: 2px;
-  display: inline-block;
-}
-.seg-pre .dot { background: rgba(96, 140, 255, 0.45); }
-.seg-auction .dot { background: rgba(232, 179, 57, 0.5); }
-.seg-post .dot { background: rgba(150, 120, 240, 0.45); }
 
 .page {
   min-height: 100vh;
@@ -779,89 +693,7 @@ const title = computed(() => {
   border-left: 1px solid var(--c-line);
 }
 
-.chart-tabs {
-  display: flex;
-  gap: 3px;
-  padding: 0 2px 6px;
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-.chart-tabs::-webkit-scrollbar {
-  display: none;
-}
-
-.ctab {
-  flex: 0 0 auto;
-  font-size: 10.5px;
-  padding: 3px 7px;
-  border-radius: 7px;
-  border: none;
-  background: transparent;
-  color: var(--c-text-3);
-  font-family: inherit;
-}
-
-.ctab.on {
-  color: var(--c-brand);
-  background: rgba(232, 56, 61, 0.12);
-  font-weight: 600;
-}
-
-.sub-tabs {
-  padding: 2px 2px 2px;
-  align-items: center;
-  border-top: 1px solid var(--c-line);
-  margin-top: 2px;
-}
-
 /* 「更多」平铺：8 个低频周期一次可见，尺寸按手指能点准来定 */
-.more-grid {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 4px;
-  padding: 4px 2px 6px;
-}
-.mchip {
-  font-size: 10.5px;
-  padding: 5px 0;
-  border-radius: 7px;
-  border: 1px solid var(--c-line);
-  background: var(--c-card);
-  color: var(--c-text-2);
-  font-family: inherit;
-  cursor: pointer;
-}
-.mchip.on {
-  color: #ff8b8d;
-  border-color: var(--c-brand);
-  background: rgba(232, 56, 61, 0.12);
-  font-weight: 600;
-}
-
-.ctab.more {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  border: 1px solid var(--c-line);
-}
-.ctab.more .caret {
-  font-style: normal;
-  font-size: 8px;
-  line-height: 1;
-}
-
-.sub-label {
-  font-size: 10px;
-  color: var(--c-text-3);
-  padding-right: 2px;
-  flex: 0 0 auto;
-}
-
-.ctab.s {
-  font-size: 10px;
-  padding: 2px 5px;
-  border-radius: 6px;
-}
 
 /* 五档：一行一档，价格列定宽右对齐，量能列右对齐便于纵向比对 */
 .depth {
