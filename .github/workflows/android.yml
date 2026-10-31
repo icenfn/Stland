@@ -100,9 +100,6 @@ jobs:
       - name: Typecheck
         run: npx vue-tsc --noEmit
 
-      - name: Build web assets
-        run: npm run build:web
-
       # 顺序很关键：必须先 init。
       # tauri android init 以 gen/android 是否存在判断「工程已初始化」，
       # 若提前创建该目录，init 会跳过脚手架，随后因

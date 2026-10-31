@@ -170,6 +170,14 @@ onMounted(refresh)
         </div>
       </section>
 
+      <section class="px">
+        <div class="card menu">
+          <button class="menu-item" @click="router.push('/orders')">
+            <span>委托与成交</span><span class="arrow">›</span>
+          </button>
+        </div>
+      </section>
+
       <p class="disclaimer px">
         资产与盈亏由服务端账务引擎结算（可用 / 冻结 / 市值三账分离）。
       </p>

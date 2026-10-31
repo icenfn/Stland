@@ -179,9 +179,8 @@ onMounted(refresh)
 
 <template>
   <div class="page">
-    <!-- 需求：删掉顶部的「自选」标题、刷新按钮与分组按钮。
-         分组切换仍由下面这条 chip 条承担（末尾「＋」进分组管理），
-         刷新改为下拉/切页自动拉取，不再单独占一个按钮。 -->
+    <!-- 本页不再自带标题栏：页名由外壳顶栏统一显示，
+         刷新由行情推送自动完成，分组管理收进分组条末尾的「＋」，三个按钮一并撤掉 -->
 
     <!-- 分组条：只做切换 -->
     <div class="group-bar" data-hscroll>
@@ -290,6 +289,26 @@ onMounted(refresh)
 </template>
 
 <style scoped>
+.self-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px 0;
+}
+.self-title {
+  font-size: 15px;
+  font-weight: 700;
+}
+.mini-btn {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--c-line);
+  border-radius: 8px;
+  color: var(--c-text-2);
+  font-size: 11px;
+  padding: 5px 10px;
+  cursor: pointer;
+  margin-left: 6px;
+}
 .group-bar {
   display: flex;
   gap: 8px;

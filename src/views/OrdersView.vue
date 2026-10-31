@@ -77,19 +77,17 @@ onBeforeUnmount(() => {})
   <div class="page">
     <AppBar back title="委托与成交" />
 
-    <div class="tabs">
-      <button class="tab" :class="{ on: tab === 'orders' }" @click="tab = 'orders'; refresh()">当日委托</button>
-      <button class="tab" :class="{ on: tab === 'trades' }" @click="tab = 'trades'; refresh()">成交明细</button>
-    </div>
-
-    <div v-if="tab === 'orders'" class="filters">
+    <!-- 不再分「当日委托 / 成交明细」两个页签：两段本就同属一张账单流水，
+         来回切只会让人反复确认「我上一笔到底成交了没」。改成同页上下两段，
+         一次滚动看全，状态与成交互相印证。 -->
+    <div class="filters">
       <button v-for="f in filters" :key="f.v" class="fchip" :class="{ on: filter === f.v }"
         @click="filter = f.v; refresh()">{{ f.label }}</button>
     </div>
 
     <p v-if="message" class="msg">{{ message }}</p>
 
-    <template v-if="tab === 'orders'">
+    <h3 class="sec-title">当日委托</h3>
       <div v-if="!orders.length" class="empty">暂无委托记录</div>
       <div v-for="o in orders" :key="o.id" class="card item-card">
         <div class="row-between">
@@ -111,10 +109,8 @@ onBeforeUnmount(() => {})
         </div>
         <p v-if="o.reject_reason" class="text-xs" style="margin-top: 6px; color: #ff8b8d">{{ o.reject_reason }}</p>
       </div>
-    </template>
-
-    <template v-else>
-      <div v-if="!trades.length" class="empty">暂无成交记录</div>
+    <h3 class="sec-title">成交明细</h3>
+    <div v-if="!trades.length" class="empty">暂无成交记录</div>
       <div v-for="t in trades" :key="t.trade_no" class="card item-card">
         <div class="row-between">
           <div class="row" style="gap: 8px">
@@ -134,7 +130,6 @@ onBeforeUnmount(() => {})
           已实现盈亏 {{ t.realized_pnl > 0 ? '+' : '' }}{{ fmtPrice(t.realized_pnl) }}
         </div>
       </div>
-    </template>
   </div>
 </template>
 

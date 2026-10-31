@@ -1,173 +1,179 @@
 <script setup lang="ts">
 /**
- * 通用底部抽屉。
+ * 共用底部抽屉。
  *
- * 抽这一层的目的：下单、分组管理、筛选面板都想「从底部滑上来 + 点遮罩关闭 +
- * 手势下滑关闭」，原先每处各写一份遮罩、动画和返回键哨兵，改一次要改三处。
+ * 为什么抽出来：
+ *   之前「下单」抽屉自己写了一套遮罩 + 圆角 + 顶部手柄 + 出入场动画，
+ *   「委托详情」「分组管理」等另外几处又各写一遍。样式稍有差异就出现
+ *   「这个抽屉能拖、那个不能拖」「这个圆角大、那个小」的不一致；
+ *   改一处圆角要改三个文件。这里把「外壳」统一：谁用谁只管放内容。
  *
- * 三件事由本组件统一负责：
- *  1. 遮罩与滑入/滑出动画（transform 动画，不改 max-height，避免内容跳动）；
- *  2. 手势下滑关闭：竖向位移超过阈值（或快速下甩）就关，位移不足则回弹；
- *  3. 返回键哨兵：抽屉打开时压一条历史记录，系统返回只收抽屉、不退页面。
+ * 手势拖动关闭（本次新增）：
+ *   从手柄/顶部区域按下往下拖，抽屉跟手位移；松手时按两个条件决定去留 ——
+ *     · 拖过 1/3 高度，或
+ *     · 快速下甩（速度 > 0.5 px/ms，即使距离不长）
+ *   满足则关闭，否则回弹复位。这个双条件与主流移动端抽屉一致：
+ *   单看距离会让「轻快一甩」被误判为取消，单看速度会让「慢慢拖到底」关不掉。
  *
- * 抽屉高度默认按内容自适应（max-height 封顶），也可以传 height 固定高度。
+ * 键盘遮挡：
+ *   抽屉里有输入框时，软键盘弹出会顶起 visualViewport 而布局视口不变，
+ *   内容被键盘盖住。这里监听 visualViewport 的 resize/scroll，
+ *   把抽屉底部 padding 抬到键盘高度，并把获得焦点的输入框滚进可视区。
  */
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 
 const props = withDefaults(
   defineProps<{
-    /** 是否显示（配合 v-model:show 使用） */
     show: boolean
-    /** 抽屉最大高度占视口比例，0~1 */
-    maxHeight?: number
-    /** 点遮罩/手势下滑是否允许关闭 */
-    closable?: boolean
+    /** 抽屉最大高度，超过则内部滚动 */
+    maxHeight?: string
+    /** 点遮罩是否关闭；有未保存内容时可置 false */
+    maskClosable?: boolean
+    /** 顶部是否显示拖拽手柄 */
+    grabber?: boolean
+    /** 是否启用手势下滑关闭 */
+    swipeable?: boolean
   }>(),
-  { maxHeight: 0.9, closable: true },
+  { maxHeight: '90vh', maskClosable: true, grabber: true, swipeable: true },
 )
 
-const emit = defineEmits<{
-  (e: 'update:show', v: boolean): void
-  (e: 'closed'): void
-}>()
+const emit = defineEmits<{ (e: 'update:show', v: boolean): void }>()
 
-/** 手势拖动位移（px），仅向下为正 */
+const sheetEl = ref<HTMLElement | null>(null)
 const dragY = ref(0)
-/** 是否正在拖动：动画要短暂关掉，否则手指跟不动 */
 const dragging = ref(false)
-/** 拖动起点 */
 let startY = 0
 let startT = 0
-/** 当前手势是否被判为「纵向拖抽屉」；横向手势（如副图滑动）不参与 */
-let vertical = false
+let pointerId: number | null = null
 
-/** 判定关闭的距离阈值：抽屉高度的 22%，且不少于 90px */
-const closeThreshold = computed(() => Math.max(90, (window.innerHeight * props.maxHeight || 600) * 0.22))
+/** 键盘抬升的高度（px），用于给抽屉底部让位 */
+const keyboardInset = ref(0)
 
-function setShow(v: boolean) {
-  if (props.show === v) return
-  emit('update:show', v)
-  if (!v) emit('closed')
+const sheetStyle = computed(() => ({
+  maxHeight: props.maxHeight,
+  transform: dragY.value ? `translateY(${dragY.value}px)` : undefined,
+  transition: dragging.value ? 'none' : undefined,
+  paddingBottom: `calc(16px + var(--safe-bottom) + ${keyboardInset.value}px)`,
+}))
+
+function close() {
+  emit('update:show', false)
 }
 
-function requestClose() {
-  if (!props.closable) return
-  setShow(false)
+function onMaskClick() {
+  if (props.maskClosable) close()
 }
 
-/** 只在抽屉头部（手柄那条）接管手势，正文里的输入框与滚动不受影响 */
-function onTouchStart(e: TouchEvent) {
-  if (!props.closable) return
-  const t = e.touches[0]
-  if (!t) return
-  startY = t.clientY
-  startT = Date.now()
+/* ---------------- 手势 ---------------- */
+function onPointerDown(e: PointerEvent) {
+  if (!props.swipeable) return
+  // 只有从顶部区域起手才算「拖抽屉」：内容区里滑动是滚动列表，不能抢
+  const el = sheetEl.value
+  if (!el) return
+  const rect = el.getBoundingClientRect()
+  const fromTop = e.clientY - rect.top
+  if (fromTop > 64) return
+  // 抽屉内部正在滚动且不在顶部时，下滑应交给滚动容器
+  if (el.scrollTop > 0) return
+
   dragging.value = true
-  vertical = false
-  dragY.value = 0
+  startY = e.clientY
+  startT = Date.now()
+  pointerId = e.pointerId
+  el.setPointerCapture?.(e.pointerId)
 }
 
-function onTouchMove(e: TouchEvent) {
-  if (!dragging.value) return
-  const t = e.touches[0]
-  if (!t) return
-  const dy = t.clientY - startY
-  // 先给 6px 的判断余量，避免手指刚动就误判方向
-  if (!vertical && Math.abs(dy) > 6) vertical = dy > 0
-  if (!vertical) {
-    dragging.value = false
-    dragY.value = 0
-    return
-  }
-  // 只跟手向下，向上拖不拉长（抽屉没有比 100% 更高的状态）
-  dragY.value = Math.max(0, dy)
-  if (dragY.value > 6) e.preventDefault()
+function onPointerMove(e: PointerEvent) {
+  if (!dragging.value || e.pointerId !== pointerId) return
+  const dy = e.clientY - startY
+  // 只允许向下拖；向上给一点阻尼感（除以 4），避免整块被提上去
+  dragY.value = dy > 0 ? dy : dy / 4
 }
 
-function onTouchEnd() {
-  if (!dragging.value) {
-    dragY.value = 0
-    return
-  }
+function onPointerUp(e: PointerEvent) {
+  if (!dragging.value || e.pointerId !== pointerId) return
   dragging.value = false
-  const dy = dragY.value
-  const dt = Date.now() - startT
-  // 距离够，或「下甩」够快（>0.55px/ms 且位移过 40px）都算关闭意图
-  const flung = dt > 0 && dy / dt > 0.55 && dy > 40
-  if (dy > closeThreshold.value || flung) {
+  pointerId = null
+  const el = sheetEl.value
+  const h = el?.getBoundingClientRect().height || 1
+  const dy = Math.max(0, dragY.value)
+  const dt = Math.max(1, Date.now() - startT)
+  const velocity = dy / dt
+
+  // 距离过 1/3 高度，或下甩速度快 —— 任一成立即关闭
+  if (dy > h / 3 || velocity > 0.5) {
     dragY.value = 0
-    requestClose()
+    close()
     return
   }
-  // 没到阈值就弹回去，交给 CSS transition
   dragY.value = 0
 }
 
-/** 抽屉打开期间的返回键哨兵 */
-let guarded = false
-
-function guardOn() {
-  if (guarded || typeof window === 'undefined') return
-  window.history.pushState({ stlandSheet: true }, '')
-  guarded = true
-  window.addEventListener('popstate', onPopState)
+/* ---------------- 键盘遮挡 ---------------- */
+function syncViewport() {
+  if (typeof window === 'undefined' || !window.visualViewport) return
+  const vv = window.visualViewport
+  // 布局视口高度 - 可视视口高度 = 被键盘（或浏览器 UI）占掉的部分
+  const inset = Math.max(0, window.innerHeight - vv.height - vv.offsetTop)
+  keyboardInset.value = inset > 80 ? inset : 0
+  if (keyboardInset.value > 0) void scrollFocusedIntoView()
 }
 
-function guardOff() {
-  window.removeEventListener('popstate', onPopState)
-  guarded = false
-}
-
-function onPopState() {
-  guarded = false
-  window.removeEventListener('popstate', onPopState)
-  if (props.show) {
-    emit('update:show', false)
-    emit('closed')
+/** 把当前获得焦点的输入框滚到可视区内，避免它正好落在键盘后面 */
+async function scrollFocusedIntoView() {
+  await nextTick()
+  const el = sheetEl.value
+  const active = document.activeElement as HTMLElement | null
+  if (!el || !active || !el.contains(active)) return
+  const rect = active.getBoundingClientRect()
+  const visibleBottom = window.innerHeight - keyboardInset.value
+  if (rect.bottom > visibleBottom) {
+    el.scrollTop += rect.bottom - visibleBottom + 16
   }
 }
 
 watch(
   () => props.show,
   (v) => {
+    dragY.value = 0
+    dragging.value = false
+    if (typeof window === 'undefined' || !window.visualViewport) return
     if (v) {
-      dragY.value = 0
-      guardOn()
+      window.visualViewport.addEventListener('resize', syncViewport)
+      window.visualViewport.addEventListener('scroll', syncViewport)
+      syncViewport()
     } else {
-      guardOff()
+      window.visualViewport.removeEventListener('resize', syncViewport)
+      window.visualViewport.removeEventListener('scroll', syncViewport)
+      keyboardInset.value = 0
     }
   },
 )
 
-onBeforeUnmount(guardOff)
-
-/** 拖动中的内联样式：跟手位移 + 关掉过渡 */
-const sheetStyle = computed(() => {
-  if (!dragging.value && dragY.value === 0) return {}
-  return {
-    transform: `translateY(${dragY.value}px)`,
-    transition: dragging.value ? 'none' : undefined,
-  }
+onBeforeUnmount(() => {
+  if (typeof window === 'undefined' || !window.visualViewport) return
+  window.visualViewport.removeEventListener('resize', syncViewport)
+  window.visualViewport.removeEventListener('scroll', syncViewport)
 })
 
-defineExpose({ close: requestClose })
+defineExpose({ close })
 </script>
 
 <template>
   <transition name="bsheet">
-    <div v-if="show" class="bsheet-mask" @click.self="requestClose">
-      <div class="bsheet" :style="{ maxHeight: `calc(var(--vh, 1vh) * ${maxHeight * 100})`, ...sheetStyle }">
-        <!-- 手柄区：手势只在这里接管，正文输入与滚动不受影响 -->
-        <div
-          class="bsheet-grab-area"
-          @touchstart.passive="onTouchStart"
-          @touchmove="onTouchMove"
-          @touchend="onTouchEnd"
-          @touchcancel="onTouchEnd"
-        >
-          <span class="bsheet-grab" />
+    <div v-if="show" class="bsheet-mask" @click.self="onMaskClick">
+      <div
+        ref="sheetEl"
+        class="bsheet"
+        :style="sheetStyle"
+        @pointerdown="onPointerDown"
+        @pointermove="onPointerMove"
+        @pointerup="onPointerUp"
+        @pointercancel="onPointerUp"
+      >
+        <div v-if="grabber" class="bsheet-top">
+          <span class="bsheet-grab" :class="{ active: dragging }" />
         </div>
-        <slot name="head" />
         <slot />
       </div>
     </div>
@@ -183,7 +189,6 @@ defineExpose({ close: requestClose })
   display: flex;
   align-items: flex-end;
 }
-
 .bsheet {
   width: 100%;
   overflow-y: auto;
@@ -191,30 +196,39 @@ defineExpose({ close: requestClose })
   background: var(--c-bg-elevated);
   border-radius: var(--r-xl) var(--r-xl) 0 0;
   border-top: 1px solid var(--c-line);
-  padding: 0 16px calc(16px + var(--safe-bottom));
+  padding: 8px 16px calc(16px + var(--safe-bottom));
   box-shadow: 0 -12px 40px rgba(0, 0, 0, 0.45);
   box-sizing: border-box;
   transition: transform 0.24s cubic-bezier(0.22, 0.61, 0.36, 1);
-  /* 让浏览器把手势交给我们处理，才能跟手拖动 */
   touch-action: pan-y;
 }
-
-/* 手柄热区：比视觉横条大一圈，手指更容易按住 */
-.bsheet-grab-area {
-  height: 22px;
-  margin: 0 -16px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+.bsheet-top {
+  position: relative;
+  height: 18px;
+  /* 加大可拖区域，手指不必精准落在 4px 的手柄上 */
+  margin: -6px -16px 0;
+  padding-top: 6px;
+  cursor: grab;
 }
-
 .bsheet-grab {
+  position: absolute;
+  left: 50%;
+  top: 6px;
   width: 38px;
   height: 4px;
   border-radius: 2px;
   background: var(--c-line-strong);
+  transform: translateX(-50%);
+  transition: background 0.2s ease;
+}
+.bsheet-grab.active {
+  background: var(--c-brand);
 }
 
+.bsheet-enter-active,
+.bsheet-leave-active {
+  transition: opacity 0.2s ease;
+}
 .bsheet-enter-active .bsheet,
 .bsheet-leave-active .bsheet {
   transition: transform 0.26s cubic-bezier(0.22, 0.61, 0.36, 1);

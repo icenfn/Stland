@@ -6,7 +6,6 @@ import type {
   Depth,
   IndexMember,
   IndexQuote,
-  KlinePeriod,
   MinutePoint,
   OrderItem,
   Overview,
@@ -58,7 +57,7 @@ export const marketApi = {
 
   /**
    * 分时序列。
-   * days=1 只看当天这条交易日的分钟走势；
+   * days=1 取当日（只含当天交易日，图上不会混进别的日期）；
    * days=5 取最近五个自然日首尾相接（「五日」视图）。
    */
   minutes: (code: string, limit = 240, days = 1) =>
@@ -66,7 +65,7 @@ export const marketApi = {
       params: { limit, days },
     }),
 
-  kline: (code: string, period: KlinePeriod = '1min', limit = 120) =>
+  kline: (code: string, period = '1min', limit = 120) =>
     alovaInstance.Get<{ code: string; period: string; items: BarItem[] }>(`/api/market/kline/${code}`, {
       params: { period, limit },
     }),
@@ -87,7 +86,7 @@ export const marketApi = {
       { params: { limit, days } },
     ),
 
-  indexKline: (code: string, period: KlinePeriod = '5min', limit = 120) =>
+  indexKline: (code: string, period = '5min', limit = 120) =>
     alovaInstance.Get<{ code: string; period: string; items: BarItem[] }>(`/api/market/index/${code}/kline`, {
       params: { period, limit },
     }),

@@ -60,7 +60,7 @@ export const appConfig = {
 
 export const apiConfig: ApiConfig = {
   baseUrl: stripTrailingSlash(envOr('VITE_API_BASE', fileApi.baseUrl) || FALLBACK_BASE),
-  timeoutMs: Number(envOr('VITE_API_TIMEOUT', String(fileApi.timeoutMs))) || 25000,
+  timeoutMs: Number(envOr('VITE_API_TIMEOUT', String(fileApi.timeoutMs))) || 15000,
   signEnabled: resolveSignEnabled(),
   signSecret: envOr('VITE_API_SIGN_SECRET', fileApi.signature.secret),
   polling: {

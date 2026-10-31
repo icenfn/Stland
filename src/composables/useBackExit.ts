@@ -1,5 +1,5 @@
 import { onBeforeUnmount, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 
 /**
  * 系统返回键的统一处理。
@@ -9,15 +9,14 @@ import { useRouter } from 'vue-router'
  *  · 但历史为空时，Android 的返回键会直接结束 Activity（等于退出应用），
  *    用户只是想从「自选」退回「首页」，结果整个 App 被关掉。
  *
- * 做法：在框架页（/, /market, /watch, /trade, /profile）栈顶压一条「哨兵记录」，
- * 返回键永远先落到我们手里，由我们决定去哪，而不是交给系统退出。
+ * 做法：在框架页（/, /market, /watch, /trade, /profile）栈顶常驻一条「兜底记录」，
+ * 让返回键永远先落到我们手里，由我们决定去哪，而不是交给系统退出。
  *
- * 本版修正了一个误提示问题：
- *   旧实现靠「地址栏有没有变」来判断这次按键发生在哪，于是
- *   「详情页 → 首页」这一下会误判成首页按键，弹出「再按一次退出股岛」。
- *   现在改用哨兵记录自带的 state 标记 + armed 状态双重判断：
- *     · armed 为 true 且弹回的正是哨兵 → 这一下确实按在框架页上；
- *     · 其它情况都是真实回退（详情/下单/登录 → 框架页），只补哨兵、不提示。
+ * 判断「这次返回是谁弹的」：浏览器派发 popstate 之前就改好了地址栏，
+ * 所以同步比较一下即可 ——
+ *   地址没变 → 弹掉的正是我们自己压的兜底记录；
+ *   地址变了 → 是一次真实回退（如个股详情 → 交易页），不干预。
+ * 若用「上一条路由是不是框架页」去猜，从详情页返回后下一次按键会被白吃一次。
  *
  * 返回语义（按约定）：
  *   框架内非首页 → 回首页；
@@ -26,7 +25,7 @@ import { useRouter } from 'vue-router'
  */
 const EXIT_HINT = '再按一次退出股岛'
 
-/** 框架页：只有这些地址上才需要哨兵记录 */
+/** 框架页：只有这些地址上才需要兜底记录 */
 const SHELL_PATHS = ['/', '/market', '/watch', '/trade', '/profile']
 
 let toastEl: HTMLElement | null = null
@@ -87,88 +86,82 @@ async function exitApp(): Promise<void> {
 }
 
 export function useBackExit() {
+  const route = useRoute()
   const router = useRouter()
 
   /** 首页上的按键次数：0=还没提示，1=已提示（下一次退出） */
   let stage = 0
-  /** 栈顶那条记录是不是我们自己压的哨兵 */
-  let armed = false
-  /** 正在处理 popstate：这期间的 afterEach 不要抢着补哨兵，否则会把真实回退误判成按键 */
-  let inPop = false
+  let guardPushed = false
+  /** 上一次已知地址，用来判断这次是不是弹掉了兜底记录 */
+  let lastHref = ''
 
   function isShell(path: string): boolean {
     return SHELL_PATHS.includes(path)
   }
 
   function ensureGuard(): void {
-    if (armed) return
+    if (guardPushed) return
     window.history.pushState({ stlandGuard: true }, '', window.location.href)
-    armed = true
+    guardPushed = true
+    // 压完必须同步 lastHref：否则下一次 popstate 会拿「压栈前」的地址去比，
+    // 把「弹掉兜底记录」误判成一次真实回退，于是从详情页回首页后
+    // 第一下按键被白吃，第二下才出现提示 —— 正是要修的那个现象。
+    lastHref = window.location.href
   }
 
-  function onPopState(ev: PopStateEvent): void {
-    inPop = true
-    window.setTimeout(() => {
-      inPop = false
-    }, 0)
-
-    const state = (ev.state ?? {}) as { stlandGuard?: boolean }
+  function onPopState(): void {
+    const href = window.location.href
+    const sameUrl = href === lastHref
+    lastHref = href
     const path = window.location.pathname
-    const destShell = isShell(path)
-    // 弹回的是哨兵，且我们确实压过一条 → 这次按键发生在框架页上
-    const backOnShell = state.stlandGuard === true && armed
 
-    if (!backOnShell) {
-      // 真实回退：详情 / 下单 / 登录页 → 框架页。不提示，只把哨兵补回去
-      armed = false
-      if (destShell) {
-        if (path !== '/') stage = 0
+    // 地址变了：真实回退（详情页 → 框架页），不拦截；落到框架页后重新备好兜底
+    if (!sameUrl) {
+      if (isShell(path)) {
+        stage = 0
+        guardPushed = false
         ensureGuard()
+      } else {
+        guardPushed = false
       }
       return
     }
 
+    // 地址没变：弹掉的是兜底记录，这一下由我们决定去向
+    guardPushed = false
+    if (!isShell(path)) return
+
     if (path !== '/') {
-      // 框架内非首页：回首页，并重新压哨兵
       stage = 0
-      armed = false
-      void router.replace('/').then(() => ensureGuard())
+      void router.replace('/')
+      ensureGuard()
       return
     }
 
     if (stage === 0) {
       stage = 1
       showExitHint()
-      armed = false
       ensureGuard()
       return
     }
-
     void exitApp()
   }
 
   const removeAfterEach = router.afterEach((to) => {
-    if (inPop) {
-      // popstate 自己会补哨兵；这里只做计次复位，避免「回首页第一下就提示」
-      if (!to.meta.tab) {
-        armed = false
-        stage = 0
-      }
-      return
-    }
+    lastHref = window.location.href
     if (to.meta.tab) {
-      // 正常（非返回）进入框架页：重新开始计次并压哨兵
+      // 回到任一框架页都视为「重新开始计次」：从交易页回首页后
+      // 再按一次仍然应该先出现提示，而不是直接退出
       stage = 0
-      armed = false
+      guardPushed = false
       ensureGuard()
     } else {
-      // 进入非框架页：哨兵已经压在脚下，下一次返回由系统处理
-      armed = false
-      stage = 0
+      guardPushed = false
     }
   })
 
   onMounted(() => {
+    lastHref = window.location.href
     if (isShell(window.location.pathname)) ensureGuard()
     window.addEventListener('popstate', onPopState)
   })
@@ -177,4 +170,7 @@ export function useBackExit() {
     window.removeEventListener('popstate', onPopState)
     removeAfterEach()
   })
+
+  // route 仅用于让 afterEach 之外的逻辑保持响应式语境，避免 lint 未使用告警
+  void route
 }

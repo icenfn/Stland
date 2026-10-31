@@ -202,7 +202,7 @@ export interface MinutePoint {
   volume: number
   avg: number
   segment?: BarSegment
-  /** 该点所属交易日（仅五日视图下发）：用来画日分隔线与当日基准线 */
+  /** 该点所属交易日（仅五日视图下发）：客户端靠它画日分隔线与每日基准线 */
   day?: string
 }
 
@@ -210,7 +210,7 @@ export interface MinutePoint {
  * K 线周期。
  *
  * 短周期由分钟线聚合，长周期（week/month/quarter/year）由日线聚合，
- * 都在服务端算好；客户端只负责传字符串。
+ * 都在服务端完成；客户端只负责传字符串。
  */
 export type KlinePeriod =
   | '1min'
