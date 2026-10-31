@@ -98,7 +98,7 @@ function openIndex(code?: string) {
           <div class="skeleton" style="width: 22%; height: 13px" />
         </div>
       </div>
-      <QuoteRow v-for="q in rankList" :key="q.code" :quote="q" show-hotword />
+      <QuoteRow v-for="q in rankList" :key="q.code" :quote="q" />
     </section>
 
     <p class="disclaimer px">

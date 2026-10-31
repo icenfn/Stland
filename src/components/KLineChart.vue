@@ -176,12 +176,15 @@ function pick(id: string): void {
     </button>
   </div>
 
+  <!-- 副图必须与主图共用同一套时间轴：multi-day 不传的话，
+       五日主图按日切分、副图却按单日重排，两块的横坐标就对不上了 -->
   <MiniChart
     v-if="mode === 'minute'"
     part="sub"
     :minutes="minutes"
     :prev-close="prevClose"
     :sub="sub"
+    :multi-day="fiveDay"
     :height="subHeight"
   />
   <MiniChart v-else part="sub" mode="kline" :bars="bars" :sub="sub" :height="subHeight" />

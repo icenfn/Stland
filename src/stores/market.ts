@@ -1,17 +1,22 @@
 /**
- * 行情状态层：WebSocket 推送优先 + 轮询兜底。
+ * 行情状态层：推送（WebSocket）为唯一「快照源」，HTTP 只做兜底与按需取数。
  *
- * 为什么要两套通道
- * ---------------
- * 上一版只有 1.5s 轮询，用户会觉得「数据不刷新」，实际原因是请求全被服务端
- * 的签名校验挡掉（已在本轮修复签名开关）。但即使签名正常，轮询仍有两个硬伤：
- *   1) 每次都是完整 HTTP 往返，移动端弱网下延迟抖动大；
- *   2) 一次 overview + 一次 list 是两个请求，客户端拿到的指数与列表可能不同 tick。
+ * 职责怎么分（本轮重构的核心）
+ * --------------------------
+ * 上一版把两件事混在一起：既用 HTTP 轮询拉 overview/list，又用 WS 推送同一份数据，
+ * 互相覆盖；筛选/排序一变就再打一次 /api/market/list —— 那是把「客户端已有的
+ * 全量快照」又找服务端要了一遍，弱网下手感很差，还会出现「刚筛完列表闪回旧数据」。
  *
- * 因此本轮改为：连上 /ws/market 后由服务端按 tick 主动推送（一次消息内含
- * 指数、涨跌分布、榜单，天然同 tick）；连不上（老服务端 / 中间设备拦截 WS）
- * 就自动退回轮询，行为与旧版一致，不会白屏。连接状态对外暴露，
- * 首页右上角据此显示「实时」或「轮询」，用户能看出当前是哪条通道在工作。
+ * 现在按数据「新鲜度来源」划分：
+ *  · 推送 / 轮询快照 → 写入 all（全量标的，含 industry/board），是列表与首页的唯一事实源；
+ *  · 筛选（关键词/行业）与排序 → 纯本地计算，从 all 派生 view，不发请求；
+ *  · HTTP 只在三种情况下出现：
+ *      1) 首次进入、还没有任何快照（冷启动兜底）；
+ *      2) WS 连不上（老服务端/被中间设备拦截）→ 轮询兜底，行为与旧版一致；
+ *      3) 详情页、分时、K 线、盘口这类「按标的取历史/明细」的接口 ——
+ *         推送里没有这些数据，只能走 HTTP。
+ *
+ * 这样一条连接就够：tick 一到，列表、榜单、指数、分布同时更新，天然同 tick。
  */
 import { reactive, computed } from 'vue'
 import { useIntervalFn, useDocumentVisibility } from '@vueuse/core'
@@ -21,8 +26,13 @@ import type { Overview, Quote } from '@/api/types'
 
 export type FeedMode = 'connecting' | 'socket' | 'polling' | 'offline'
 
+type SortKey = 'change_pct' | 'amount' | 'turnover_rate' | 'price' | 'code'
+
 const state = reactive({
   overview: null as Overview | null,
+  /** 全量快照（推送优先），列表与首页的共同来源 */
+  all: [] as Quote[],
+  /** 按当前筛选/排序派生出的列表视图；面板直接渲染它 */
   quotes: [] as Quote[],
   loading: false,
   lastError: '',
@@ -30,7 +40,7 @@ const state = reactive({
   feed: 'connecting' as FeedMode,
   socketTicks: 0,
   keyword: '',
-  sort: 'change_pct' as string,
+  sort: 'change_pct' as SortKey,
   order: 'desc' as 'desc' | 'asc',
   industry: '',
 })
@@ -50,14 +60,40 @@ function socketUrl(): string {
   return `${base}${apiConfig.realtime.wsPath}`
 }
 
+/**
+ * 本地派生列表：筛选 + 排序都不出网。
+ *
+ * 为什么排序放本地：快照里就是全部标的最新价，按任意字段排一遍只是内存里的
+ * O(n log n)；而每次筛选都打一次接口，既慢又会出现「先闪回旧顺序」的观感。
+ */
+function applyView(): void {
+  const kw = state.keyword.trim()
+  const ind = state.industry
+  let rows = state.all
+  if (ind) rows = rows.filter((q) => q.industry === ind)
+  if (kw) rows = rows.filter((q) => q.name.includes(kw) || q.code.includes(kw))
+
+  const key = state.sort
+  const dir = state.order === 'asc' ? 1 : -1
+  const sorted = [...rows].sort((a, b) => {
+    if (key === 'code') return a.code.localeCompare(b.code) * dir
+    const av = Number((a as any)[key] ?? 0)
+    const bv = Number((b as any)[key] ?? 0)
+    return (av - bv) * dir
+  })
+  state.quotes = sorted
+}
+
 /** 服务端推送与轮询响应的结构统一在这里归一，减少两套通道的差异 */
 function applyPayload(payload: any): void {
   if (!payload || typeof payload !== 'object') return
   if (payload.index && payload.stats) {
     state.overview = payload as Overview
   }
+  // items 是推送里的全量标的（含 industry / board），直接作为唯一事实源
   if (Array.isArray(payload.items)) {
-    state.quotes = payload.items as Quote[]
+    state.all = payload.items as Quote[]
+    applyView()
   }
   state.lastUpdated = Date.now()
   state.lastError = ''
@@ -149,15 +185,21 @@ export function useMarket() {
     }
   }
 
+  /**
+   * 列表视图刷新。
+   *
+   * 有快照就纯本地重排一次（不发请求）；只有冷启动、快照还是空的，
+   * 才真的去问一次 /api/market/list —— 这正是「合理使用 socket 与 http」的边界。
+   */
   async function refreshList() {
+    if (state.all.length) {
+      applyView()
+      return
+    }
     try {
-      const res = await marketApi.list({
-        sort: state.sort,
-        order: state.order,
-        keyword: state.keyword,
-        industry: state.industry,
-      })
-      state.quotes = res.items
+      const res = await marketApi.list({ sort: state.sort, order: state.order })
+      state.all = res.items
+      applyView()
     } catch (e: any) {
       state.lastError = e?.message ?? '行情列表获取失败'
       throw e
@@ -227,8 +269,18 @@ export function useMarket() {
     closeSocket()
   }
 
+  /** 筛选/排序变更入口：面板只改状态，重排在本地完成 */
+  function setFilter(patch: { keyword?: string; industry?: string; sort?: SortKey; order?: 'desc' | 'asc' }): void {
+    if (patch.keyword !== undefined) state.keyword = patch.keyword
+    if (patch.industry !== undefined) state.industry = patch.industry
+    if (patch.sort !== undefined) state.sort = patch.sort
+    if (patch.order !== undefined) state.order = patch.order
+    applyView()
+  }
+
   function findByCode(code: string): Quote | undefined {
     return (
+      state.all.find((q) => q.code === code) ??
       state.quotes.find((q) => q.code === code) ??
       state.overview?.rank.gainers.find((q) => q.code === code) ??
       state.overview?.rank.losers.find((q) => q.code === code)
@@ -247,6 +299,7 @@ export function useMarket() {
     refreshAll,
     start,
     stop,
+    setFilter,
     findByCode,
   }
 }

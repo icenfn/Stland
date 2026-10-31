@@ -13,14 +13,14 @@ const { state } = market
 
 const keyword = ref('')
 const industry = ref('')
-const sort = ref('change_pct')
+const sort = ref<'change_pct' | 'amount' | 'turnover_rate' | 'price'>('change_pct')
 const industries = ref<Array<{ industry: string; count: number; change_pct: number }>>([])
 const loading = ref(false)
 const router = useRouter()
 /** 指数和个股一样有代码，独立成一组入口（不可交易，但可看详情） */
 const indices = ref<IndexQuote[]>([])
 
-const sortOptions = [
+const sortOptions: Array<{ value: 'change_pct' | 'amount' | 'turnover_rate' | 'price'; label: string }> = [
   { value: 'change_pct', label: '涨幅' },
   { value: 'amount', label: '成交额' },
   { value: 'turnover_rate', label: '换手' },
@@ -29,10 +29,16 @@ const sortOptions = [
 
 let debounce: number | undefined
 
+/**
+ * 筛选与排序都在本地重排（store 里从全量快照派生视图），不发请求。
+ * 只有快照还没到（冷启动）时，store 内部才会去补一次 HTTP 列表。
+ */
 function applyFilter() {
-  state.keyword = keyword.value.trim()
-  state.industry = industry.value
-  state.sort = sort.value
+  market.setFilter({
+    keyword: keyword.value.trim(),
+    industry: industry.value,
+    sort: sort.value,
+  })
   void market.refreshList()
 }
 
@@ -107,7 +113,7 @@ onBeforeUnmount(() => {
 
     <div class="list">
       <div v-if="!list.length" class="empty">暂无匹配标的</div>
-      <QuoteRow v-for="q in list" :key="q.code" :quote="q" show-hotword />
+      <QuoteRow v-for="q in list" :key="q.code" :quote="q" />
     </div>
 
     <p class="disclaimer">

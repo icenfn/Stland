@@ -1,31 +1,40 @@
 import { onBeforeUnmount, onMounted } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRouter } from 'vue-router'
 
 /**
  * 系统返回键的统一处理。
  *
- * 为什么需要这层：
- *  · 底栏切页用 replace，不写历史 —— 用户点五个格子不会堆出五条历史；
- *  · 但历史为空时，Android 的返回键会直接结束 Activity（等于退出应用），
- *    用户只是想从「自选」退回「首页」，结果整个 App 被关掉。
+ * 背景
+ * ----
+ * 底栏切页用的是 replace，不会堆历史；可历史为空时 Android 的返回键会直接
+ * 结束 Activity —— 用户只想从「自选」退回「首页」，整个 App 却被关掉。
  *
- * 做法：在框架页（/, /market, /watch, /trade, /profile）栈顶常驻一条「哨兵记录」，
- * 让返回键永远先落到我们手里，由我们决定去哪，而不是交给系统退出。
+ * 做法：只在框架页栈顶压一条带标记的「哨兵记录」，让返回键先落到我们手里。
  *
- * 为什么不再比 URL：
- *   上一版靠「popstate 后地址有没有变」判断这次返回是谁弹的。
- *   可 router 在详情页 → 首页这一跳里会再次压哨兵，栈里出现两条同 URL 的记录，
- *   于是「弹掉哨兵」与「从详情页回首页」长得一模一样，URL 比不出来 ——
- *   表现就是刚退回首页、手还没动，提示就先弹了出来。
+ * 上一版为什么还会误弹提示
+ * ------------------------
+ * 上一版用 `armed` 布尔表示「此刻是否站在哨兵上」，但有两处把它拧坏了：
+ *   1) 进详情页时 afterEach 把 armed 置 false，却没有把「详情页这条记录」
+ *      和「哨兵」区分开，返回时又是一次 pushState 补哨兵，栈里出现两条
+ *      内容相同、标记相同的记录；
+ *   2) 判断是否「按掉了哨兵」只看 armed 的前后值，而 afterEach 会在每次
+ *      路由变化后无条件补哨兵，于是「详情页 → 首页」这条真实回退，
+ *      也满足「前一帧 armed 为真」的条件 —— 提示就这么弹了出来。
  *
- *   现在改为给哨兵打 state 标记，并维护 `armed`：它表示「此刻站在哨兵记录上」。
- *   判断一次返回是否弹掉了哨兵，只看 popstate 触发前 armed 是否为真，
- *   与地址是否重复无关，因此「详情页 → 首页」不会被误判成「首页按键」。
+ * 现在怎么判
+ * ----------
+ * 只用浏览器给的事实：这次 popstate 之前栈顶是不是哨兵（`guardOnTop`），
+ * 以及落到的这条记录自己带不带哨兵标记（`e.state[GUARD]`）。
+ *   · 前真后假 → 消费掉的正是哨兵，这是一次「在框架页上按了返回」；
+ *   · 前假   → 一次普通的历史回退（详情页 → 首页），只补哨兵，绝不提示。
+ * 并且 afterEach 只在栈顶确实没有哨兵时才补（幂等），不再无脑 push，
+ * 从而不会出现「两条同标记记录」这种把两者混为一谈的状态。
  *
- * 返回语义（按约定）：
+ * 返回语义：
  *   框架内非首页 → 回首页；
  *   首页第一次   → 提示「再按一次退出股岛」；
  *   首页第二次   → 退出应用。
+ * 从任意框架页跳进详情/登录后，返回一律只是一次正常回退，不参与上面的计数。
  */
 const EXIT_HINT = '再按一次退出股岛'
 const GUARD = 'stlandGuard'
@@ -71,97 +80,123 @@ export function showExitHint(text = EXIT_HINT): void {
   }, 1800)
 }
 
-/** 退出应用：Tauri 壳里关窗口；浏览器里退化为关标签（拿不到权限时就是空操作） */
-async function exitApp(): Promise<void> {
+/**
+ * 退出应用。
+ *
+ * Tauri 2 的 Android 上 `getCurrentWindow().close()` 是有效的；
+ * 桌面端同理。浏览器里没有退出权限，`window.close()` 多半是空操作 ——
+ * 这时候就退一步：停在当前页并不再提示，避免用户以为有东西坏掉了。
+ */
+async function exitApp(): Promise<boolean> {
   const t = (window as any).__TAURI__
   try {
     const win = t?.window?.getCurrentWindow?.()
     if (win?.close) {
       await win.close()
-      return
+      return true
     }
-    if (t?.app?.exit) {
-      await t.app.exit(0)
-      return
+    if (t?.process?.exit) {
+      await t.process.exit(0)
+      return true
     }
   } catch {
     /* 落到下面的兜底 */
   }
-  window.close()
+  if ((window as any).__TAURI_INTERNALS__) return true
+  try {
+    window.close()
+  } catch {
+    /* 浏览器里拿不到权限，忽略 */
+  }
+  return false
 }
 
 export function useBackExit() {
-  const route = useRoute()
   const router = useRouter()
 
   /** 首页上的按键次数：0=还没提示，1=已提示（下一次退出） */
   let stage = 0
-  /** 当前历史记录是否就是自己压的哨兵 */
-  let armed = false
+  /** 栈顶这条记录是否就是我们压的哨兵（唯一判断依据） */
+  let guardOnTop = false
 
   function isShell(path: string): boolean {
     return SHELL_PATHS.includes(path)
   }
 
-  /** 在当前地址之上压一条带头标记的哨兵记录 */
-  function pushGuard(): void {
-    window.history.pushState({ [GUARD]: true }, '', window.location.href)
-    armed = true
+  /** 栈顶是否已经是哨兵 —— 以浏览器 state 为准，避免自己记错 */
+  function topIsGuard(): boolean {
+    const st = window.history.state as Record<string, unknown> | null
+    return Boolean(st && st[GUARD])
+  }
+
+  /** 补哨兵：幂等，栈顶已有就不再压 */
+  function ensureGuard(): void {
+    if (!isShell(window.location.pathname)) {
+      guardOnTop = false
+      return
+    }
+    if (!topIsGuard()) {
+      window.history.pushState({ ...(window.history.state || {}), [GUARD]: true }, '', window.location.href)
+    }
+    guardOnTop = true
   }
 
   function onPopState(e: PopStateEvent): void {
-    const wasArmed = armed
-    // 落到的那条记录若自己带标记，说明它就是哨兵（可能有多条同 URL 的）
-    armed = !!(e.state && e.state[GUARD])
+    const wasGuard = guardOnTop
+    const landedOnGuard = Boolean(e.state && (e.state as Record<string, unknown>)[GUARD])
+    guardOnTop = landedOnGuard
+
     const path = window.location.pathname
 
-    // 这次返回没触及哨兵：是一次真实的页内回退（详情页 → 上一页），
-    // 绝不能当成「首页按键」去弹退出提示 —— 正是要修的那个现象。
-    if (!wasArmed) {
+    // 这次回退没有消费哨兵 —— 是一次真实的页内回退（详情页 → 首页等）。
+    // 这里绝不能提示；只是把哨兵补回去，供「下一次按键」使用。
+    if (!wasGuard) {
       if (isShell(path)) {
         stage = 0
-        armed = false
-        pushGuard()
+        ensureGuard()
       }
       return
     }
 
-    // 弹掉的正是哨兵，这一下由我们决定去向
+    // 消费掉的是哨兵，说明用户是在框架页上按了返回，由我们决定去向
     if (!isShell(path)) return
 
     if (path !== '/') {
+      // 非首页的框架页：先回首页，并把计次清零
       stage = 0
       void router.replace('/')
-      pushGuard()
+      // replace 会覆盖当前记录，稍后再补哨兵（等路由把地址落定）
+      window.setTimeout(ensureGuard, 0)
       return
     }
 
     if (stage === 0) {
       stage = 1
       showExitHint()
-      pushGuard()
+      ensureGuard()
       return
     }
-    void exitApp()
+
+    // 第二次：退出。退不掉时（浏览器）恢复成「已提示」状态，不再叠加提示。
+    void exitApp().then((ok) => {
+      if (!ok) stage = 1
+    })
   }
 
   const removeAfterEach = router.afterEach((to) => {
     if (to.meta.tab) {
-      // 回到任一框架页都视为「重新开始计次」：从交易页回首页后
-      // 再按一次仍然应该先出现提示，而不是直接退出
+      // 回到任一框架页都重新计次：从交易页回首页后再按一次仍应先提示
       stage = 0
-      if (!armed) pushGuard()
+      // 等本次导航的地址落定再判断栈顶，避免读到上一页的 state
+      window.setTimeout(ensureGuard, 0)
       return
     }
-    // 离开框架页（进详情、登录等）：当前记录已不是哨兵
-    armed = false
+    // 离开框架页（详情 / 登录）：栈顶已是普通记录，哨兵被压在下面
+    guardOnTop = false
   })
 
   onMounted(() => {
-    if (isShell(window.location.pathname)) {
-      armed = false
-      pushGuard()
-    }
+    ensureGuard()
     window.addEventListener('popstate', onPopState)
   })
 
@@ -169,6 +204,4 @@ export function useBackExit() {
     window.removeEventListener('popstate', onPopState)
     removeAfterEach()
   })
-
-  void route
 }

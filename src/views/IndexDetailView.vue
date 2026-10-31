@@ -62,6 +62,14 @@ const loading = ref(true)
 /** 主图类型与周期：分时不带周期，K 线才带 */
 const mode = ref<'minute' | 'kline'>('minute')
 const period = ref('5min')
+/**
+ * 分时的「当日 / 五日」。
+ *
+ * 指数与个股必须用同一套视图能力：上一版指数页把 five-day 写死成 false、
+ * 主周期栏也没有「五日」，于是同一个「看分时」的动作在两页得到两种结果。
+ * 现在与个股完全对齐 —— 分时拿 days=1 的当日序列，五日拿 days=5。
+ */
+const fiveDay = ref(false)
 /** 副图：无 / 成交量 / MACD —— 纯展示切换，不产生请求 */
 const sub = ref<'volume' | 'macd' | 'ratio'>('macd')
 
@@ -179,9 +187,12 @@ async function loadQuote() {
 async function loadChart() {
   try {
     if (mode.value === 'minute') {
+      // 五日视图需要五天的分钟线：limit 放大到 5×240，并用 days=5 让服务端按日切开
+      const days = fiveDay.value ? 5 : 1
+      const limit = fiveDay.value ? 1200 : 240
       const res = isIndex.value
-        ? await marketApi.indexMinutes(code.value, 240)
-        : await marketApi.minutes(code.value, 240)
+        ? await marketApi.indexMinutes(code.value, limit, days)
+        : await marketApi.minutes(code.value, limit, days)
       minutes.value = res.items
     } else {
       const res = isIndex.value
@@ -228,6 +239,7 @@ async function toggleWatch() {
 /** 传给共用图表组件的主周期栏：指数常用周期，低频项收进「更多」 */
 const MAIN_TABS = [
   { id: 'minute', label: '分时' },
+  { id: 'fiveDay', label: '五日' },
   { id: '5min', label: '5分' },
   { id: '15min', label: '15分' },
   { id: '30min', label: '30分' },
@@ -247,18 +259,28 @@ const MORE_CHIPS = [
 /** 组件只回报点了哪个 id，取数仍留在本页 */
 function onChartSelect(id: string): void {
   if (id === 'minute') return switchMinute()
+  if (id === 'fiveDay') return switchFiveDay()
   switchPeriod(id)
 }
 
 function switchPeriod(p: string) {
   mode.value = 'kline'
   period.value = p
+  fiveDay.value = false
   loadChart()
 }
 
 function switchMinute() {
-  if (mode.value === 'minute') return
+  if (mode.value === 'minute' && !fiveDay.value) return
   mode.value = 'minute'
+  fiveDay.value = false
+  loadChart()
+}
+
+function switchFiveDay() {
+  if (mode.value === 'minute' && fiveDay.value) return
+  mode.value = 'minute'
+  fiveDay.value = true
   loadChart()
 }
 
@@ -296,6 +318,7 @@ watch(
     bars.value = []
     members.value = []
     mode.value = 'minute'
+    fiveDay.value = false
     await Promise.all([loadQuote(), loadChart(), loadWatch()])
   },
 )
@@ -347,7 +370,7 @@ const title = computed(() => {
           <KLineChart
             :mode="mode"
             :period="period"
-            :five-day="false"
+            :five-day="fiveDay"
             :sub="sub"
             :minutes="minutes"
             :bars="bars"
