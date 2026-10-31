@@ -202,7 +202,28 @@ export interface MinutePoint {
   volume: number
   avg: number
   segment?: BarSegment
+  /** 该点所属交易日（仅五日视图下发）：用来画日分隔线与当日基准线 */
+  day?: string
 }
+
+/**
+ * K 线周期。
+ *
+ * 短周期由分钟线聚合，长周期（week/month/quarter/year）由日线聚合，
+ * 都在服务端算好；客户端只负责传字符串。
+ */
+export type KlinePeriod =
+  | '1min'
+  | '5min'
+  | '15min'
+  | '30min'
+  | '60min'
+  | '120min'
+  | 'day'
+  | 'week'
+  | 'month'
+  | 'quarter'
+  | 'year'
 
 /** 指数成分：列表里直接带报价，避免为了看涨跌幅再逐支请求 */
 export interface IndexMember {

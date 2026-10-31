@@ -27,12 +27,13 @@
  *
  * 返回键语义保持不变：抽屉打开时按系统返回键只关闭抽屉，不退出当前页面。
  */
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { accountApi, marketApi, tradeApi } from '@/api'
 import type { Quote, StockMeta, TradePreview } from '@/api/types'
 import { useAuth } from '@/stores/auth'
 import { fmtAmount, fmtPrice } from '@/utils/format'
+import BaseSheet from '@/components/BaseSheet.vue'
 
 const props = withDefaults(
   defineProps<{
@@ -50,6 +51,15 @@ const emit = defineEmits<{
 
 const router = useRouter()
 const auth = useAuth()
+
+/**
+ * 与共用抽屉双向绑定：抽屉内部（遮罩点击 / 手势下滑 / 系统返回）关闭时
+ * 走 update:show，父组件的 v-model:show 随之收起。
+ */
+const visibleShow = computed({
+  get: () => props.show,
+  set: (v: boolean) => emit('update:show', v),
+})
 
 const code = ref('')
 const side = ref<'buy' | 'sell'>('buy')
@@ -88,35 +98,13 @@ const maxQty = computed(() => {
 
 const estimateAmount = computed(() => Number(quote.value?.price ?? 0) * Number(quantity.value || 0))
 
-/** 是否已经压入了返回键哨兵状态 */
-let guardPushed = false
-
-function guardOn() {
-  if (guardPushed || typeof window === 'undefined') return
-  window.history.pushState({ stlandSheet: true }, '')
-  guardPushed = true
-  window.addEventListener('popstate', onPopState)
-}
-
-function guardOff() {
-  window.removeEventListener('popstate', onPopState)
-  guardPushed = false
-}
-
-/** 系统返回键 / 手势返回：拦下路由回退，只关抽屉 */
-function onPopState() {
-  guardPushed = false
-  window.removeEventListener('popstate', onPopState)
-  if (props.show) emit('update:show', false)
-}
-
-/** 主动关闭：先把哨兵状态退掉，再通知父组件收起 */
+/**
+ * 关闭抽屉。
+ *
+ * 返回键哨兵、遮罩点击、手势下滑都已收进 BaseSheet，
+ * 这里只负责通知父组件收起，不再自己维护历史记录。
+ */
 function close() {
-  if (guardPushed) {
-    // 不先移除监听：由 history.back() 触发的 popstate 会负责关抽屉与解绑
-    window.history.back()
-    return
-  }
   emit('update:show', false)
 }
 
@@ -238,10 +226,7 @@ function goLogin() {
 watch(
   () => props.show,
   (v) => {
-    if (!v) {
-      guardOff()
-      return
-    }
+    if (!v) return
     message.value = ''
     preview.value = null
     code.value = props.code
@@ -252,7 +237,6 @@ watch(
     price.value = ''
     quantity.value = '100'
     orderType.value = 'limit'
-    guardOn()
     void loadSymbol().then(() => Promise.all([loadCapacity(), refreshPreview()]))
   },
 )
@@ -260,20 +244,17 @@ watch(
 watch([price, quantity, orderType, side], () => {
   if (props.show) void refreshPreview()
 })
-
-onBeforeUnmount(guardOff)
 </script>
 
 <template>
-  <transition name="sheet">
-    <div v-if="show" class="sheet-mask" @click.self="close">
-      <div class="sheet">
-        <div class="sheet-top">
-          <span class="sheet-grab" />
-          <!-- 方向由入口决定，这里只做「当前在做什么」的提示，不再提供切换 -->
-          <span class="side-tag" :class="side">{{ side === 'buy' ? '买入' : '卖出' }}</span>
-          <button class="sheet-close" aria-label="关闭" @click="close">✕</button>
-        </div>
+  <BaseSheet v-model:show="visibleShow" :max-height="0.9">
+    <template #head>
+      <div class="sheet-top">
+        <!-- 方向由入口决定，这里只做「当前在做什么」的提示，不再提供切换 -->
+        <span class="side-tag" :class="side">{{ side === 'buy' ? '买入' : '卖出' }}</span>
+        <button class="sheet-close" aria-label="关闭" @click="close">✕</button>
+      </div>
+    </template>
 
         <div class="seg-row">
           <button class="seg-btn" :class="{ on: orderType === 'limit' }" @click="orderType = 'limit'">
@@ -358,44 +339,17 @@ onBeforeUnmount(guardOff)
           {{ submitting ? '提交中…' : side === 'buy' ? '确认买入' : '确认卖出' }}
         </button>
         <p class="tip">撮合按价格优先、时间优先逐档成交；未成交部分资金自动解冻。</p>
-      </div>
-    </div>
-  </transition>
+  </BaseSheet>
 </template>
 
 <style scoped>
-.sheet-mask {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.55);
-  z-index: 70;
-  display: flex;
-  align-items: flex-end;
-}
-.sheet {
-  width: 100%;
-  max-height: 90vh;
-  overflow-y: auto;
-  background: var(--c-bg-elevated);
-  border-radius: var(--r-xl) var(--r-xl) 0 0;
-  border-top: 1px solid var(--c-line);
-  padding: 8px 16px calc(16px + var(--safe-bottom));
-  box-shadow: 0 -12px 40px rgba(0, 0, 0, 0.45);
-  box-sizing: border-box;
-}
+/* 遮罩、面板、手柄与滑入动画都由 BaseSheet 统一提供，这里只留本组件自己的部分 */
 .sheet-top {
   position: relative;
   height: 22px;
-}
-.sheet-grab {
-  position: absolute;
-  left: 50%;
-  top: 4px;
-  width: 38px;
-  height: 4px;
-  border-radius: 2px;
-  background: var(--c-line-strong);
-  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 .side-tag {
   position: absolute;
@@ -567,22 +521,5 @@ onBeforeUnmount(guardOff)
   color: var(--c-text-3);
   margin: 8px 0 0;
   line-height: 1.6;
-}
-
-.sheet-enter-active,
-.sheet-leave-active {
-  transition: opacity 0.2s ease;
-}
-.sheet-enter-active .sheet,
-.sheet-leave-active .sheet {
-  transition: transform 0.26s cubic-bezier(0.22, 0.61, 0.36, 1);
-}
-.sheet-enter-from,
-.sheet-leave-to {
-  opacity: 0;
-}
-.sheet-enter-from .sheet,
-.sheet-leave-to .sheet {
-  transform: translateY(100%);
 }
 </style>

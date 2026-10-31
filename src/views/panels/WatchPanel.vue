@@ -179,13 +179,9 @@ onMounted(refresh)
 
 <template>
   <div class="page">
-    <!-- 顶栏由外壳统一提供；这里只留本页自己的两个动作 -->
-    <div class="self-bar">
-      <span class="self-title">自选</span>
-      <span class="grow" />
-      <button class="mini-btn" @click="refresh">刷新</button>
-      <button class="mini-btn" @click="openManage">分组</button>
-    </div>
+    <!-- 需求：删掉顶部的「自选」标题、刷新按钮与分组按钮。
+         分组切换仍由下面这条 chip 条承担（末尾「＋」进分组管理），
+         刷新改为下拉/切页自动拉取，不再单独占一个按钮。 -->
 
     <!-- 分组条：只做切换 -->
     <div class="group-bar" data-hscroll>
@@ -294,26 +290,6 @@ onMounted(refresh)
 </template>
 
 <style scoped>
-.self-bar {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 14px 0;
-}
-.self-title {
-  font-size: 15px;
-  font-weight: 700;
-}
-.mini-btn {
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid var(--c-line);
-  border-radius: 8px;
-  color: var(--c-text-2);
-  font-size: 11px;
-  padding: 5px 10px;
-  cursor: pointer;
-  margin-left: 6px;
-}
 .group-bar {
   display: flex;
   gap: 8px;

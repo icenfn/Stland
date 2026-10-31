@@ -22,8 +22,13 @@ const roleOptions: Array<{ value: Role; label: string; desc: string }> = [
   { value: 'institution', label: '机构专业', desc: '专业交易台、融资额度' },
 ]
 
-async function submit() {
-  errorMsg.value = ''
+/** 返回：优先退回上一页，直接进登录页（历史为空）时回首页 */
+function goBack() {
+  if (window.history.length > 1) router.back()
+  else void router.replace('/')
+}
+
+async function submit() {  errorMsg.value = ''
   if (mode.value === 'register') {
     if (username.value.trim().length < 3) {
       errorMsg.value = '用户名至少 3 位'
@@ -31,6 +36,12 @@ async function submit() {
     }
     if (password.value.length < 8) {
       errorMsg.value = '口令至少 8 位'
+      return
+    }
+    // 昵称是给别人看的名字（持仓榜、成交回报都用它），留空会导致列表里一片空白，
+    // 所以注册时按必填校验，登录不受影响。
+    if (!displayName.value.trim()) {
+      errorMsg.value = '请填写昵称'
       return
     }
   }
@@ -54,6 +65,12 @@ async function submit() {
 
 <template>
   <div class="login-page">
+    <!-- 左上角返回：从「我的」或详情页跳来登录，必须能一键退回，
+         否则只有系统的返回手势这一条路，误触后容易连退两层 -->
+    <button class="back-btn" aria-label="返回" @click="goBack">
+      <span class="chev">‹</span>
+    </button>
+
     <div class="hero">
       <div class="logo">股岛</div>
       <div class="slogan">Stland · 自包含模拟交易所</div>
@@ -80,7 +97,7 @@ async function submit() {
       <template v-if="mode === 'register'">
         <label class="field">
           <span class="label">昵称</span>
-          <input v-model="displayName" class="input" placeholder="展示名称（可选）" />
+          <input v-model="displayName" class="input" placeholder="必填，2-12 个字" maxlength="12" />
         </label>
         <div class="field">
           <span class="label">账户类型</span>
@@ -114,10 +131,41 @@ async function submit() {
   padding-top: var(--status-bar-height);
   display: flex;
   flex-direction: column;
+  /* 返回按钮绝对定位的锚点 */
+  position: relative;
 }
 
 .hero {
   padding: 34px 24px 22px;
+}
+
+/* 左上角返回：圆形描边按钮，落在状态栏之下、标题文字之上 */
+.back-btn {
+  position: absolute;
+  top: calc(var(--status-bar-height) + 6px);
+  left: 12px;
+  width: 34px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  border: 1px solid var(--c-line);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--c-text-2);
+  font-size: 18px;
+  line-height: 1;
+  padding: 0;
+  z-index: 3;
+}
+
+.back-btn:active {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.back-btn .chev {
+  margin-top: -2px;
+  margin-right: 1px;
 }
 .logo {
   font-size: 30px;

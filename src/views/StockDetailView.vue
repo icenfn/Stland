@@ -31,6 +31,7 @@ import type {
   DetailQuote,
   IndexMember,
   IndexQuote,
+  KlinePeriod,
   MinutePoint,
   Quote,
   StockMeta,
@@ -61,8 +62,10 @@ const error = ref('')
 const loading = ref(true)
 
 /** 主图类型与周期：分时不带周期，K 线才带 */
-const mode = ref<'minute' | 'kline'>('minute')
-const period = ref('5min')
+const mode = ref<'minute' | 'five' | 'kline'>('minute')
+const period = ref<KlinePeriod>('day')
+/** 「更多」平铺面板是否展开：点开后在下方摊出 8 个细分周期 */
+const moreOpen = ref(false)
 /** 副图：无 / 成交量 / MACD —— 纯展示切换，不产生请求 */
 const sub = ref<'volume' | 'macd' | 'ratio'>('macd')
 
@@ -80,7 +83,8 @@ const SEGMENT_TEXT: Record<string, string> = {
 }
 
 const segmentsPresent = computed(() => {
-  const src = mode.value === 'minute' ? minutes.value : bars.value
+  // 分时与五日都取自分钟线，只有 K 线才看 bars
+  const src = mode.value === 'kline' ? bars.value : minutes.value
   const seen = new Set<string>()
   for (const item of src as Array<{ segment?: string }>) {
     const seg = item.segment
@@ -222,10 +226,14 @@ async function loadDepth() {
 
 async function loadChart() {
   try {
-    if (mode.value === 'minute') {
+    if (mode.value !== 'kline') {
+      // 分时只看当天；五日要看五个交易日，服务端按 limit 截尾，
+      // 一天 240 根，所以五日必须把 limit 放大到 5 倍，否则只会剩最后一天。
+      const days = mode.value === 'five' ? 5 : 1
+      const limit = 240 * days
       const res = isIndex.value
-        ? await marketApi.indexMinutes(code.value, 240)
-        : await marketApi.minutes(code.value, 240)
+        ? await marketApi.indexMinutes(code.value, limit, days)
+        : await marketApi.minutes(code.value, limit, days)
       minutes.value = res.items
     } else {
       const res = isIndex.value
@@ -269,15 +277,50 @@ async function toggleWatch() {
   }
 }
 
-function switchPeriod(p: string) {
+/** 主周期栏的一级项：分时 / 五日 / 日K / 周K / 月K / 更多 */
+const MAIN_TABS: { key: 'minute' | 'five' | KlinePeriod; label: string }[] = [
+  { key: 'minute', label: '分时' },
+  { key: 'five', label: '五日' },
+  { key: 'day', label: '日K' },
+  { key: 'week', label: '周K' },
+  { key: 'month', label: '月K' },
+]
+
+/** 「更多」平铺的细分周期：分钟级四档加 120 分，再补季、年两根长周期 */
+const MORE_TABS: { key: KlinePeriod; label: string }[] = [
+  { key: '1min', label: '1分' },
+  { key: '5min', label: '5分' },
+  { key: '15min', label: '15分' },
+  { key: '30min', label: '30分' },
+  { key: '60min', label: '60分' },
+  { key: '120min', label: '120分' },
+  { key: 'quarter', label: '季K' },
+  { key: 'year', label: '年K' },
+]
+
+/** 当前是否停在「更多」里的某个细分周期上：决定「更多」按钮是否高亮 */
+const inMore = computed(() => MORE_TABS.some((t) => t.key === period.value) && mode.value === 'kline')
+
+/** 一级项高亮判断：分时/五日看 mode，K 线看 period */
+function isTabOn(key: 'minute' | 'five' | KlinePeriod) {
+  if (key === 'minute') return mode.value === 'minute'
+  if (key === 'five') return mode.value === 'five'
+  return mode.value === 'kline' && period.value === key
+}
+
+function switchPeriod(p: KlinePeriod) {
+  // 从「更多」里选中的周期点完就收起面板，避免一直占着图上方空间
+  if (MORE_TABS.some((t) => t.key === p)) moreOpen.value = false
+  if (mode.value === 'kline' && period.value === p) return
   mode.value = 'kline'
   period.value = p
   loadChart()
 }
 
-function switchMinute() {
-  if (mode.value === 'minute') return
-  mode.value = 'minute'
+function switchMode(m: 'minute' | 'five') {
+  if (mode.value === m) return
+  mode.value = m
+  moreOpen.value = false
   loadChart()
 }
 
@@ -365,19 +408,31 @@ const title = computed(() => {
       <!-- ② 图表卡：主图 + 可切换副图，与盘口/分布窄栏同屏对照 -->
       <section class="chart-row">
         <div class="chart-card">
+          <!-- 主图周期栏：一级项常驻，「更多」点开后在下一行平铺 8 个细分周期 -->
           <div class="chart-tabs">
-            <button class="ctab" :class="{ on: mode === 'minute' }" @click="switchMinute">分时</button>
-            <button class="ctab" :class="{ on: mode === 'kline' && period === '5min' }" @click="switchPeriod('5min')">5分</button>
-            <button class="ctab" :class="{ on: mode === 'kline' && period === '15min' }" @click="switchPeriod('15min')">15分</button>
-            <button class="ctab" :class="{ on: mode === 'kline' && period === '30min' }" @click="switchPeriod('30min')">30分</button>
-            <button class="ctab" :class="{ on: mode === 'kline' && period === '60min' }" @click="switchPeriod('60min')">60分</button>
-            <button class="ctab" :class="{ on: mode === 'kline' && period === 'day' }" @click="switchPeriod('day')">日K</button>
+            <button
+              v-for="t in MAIN_TABS"
+              :key="t.key"
+              class="ctab"
+              :class="{ on: isTabOn(t.key) }"
+              @click="t.key === 'minute' || t.key === 'five' ? switchMode(t.key) : switchPeriod(t.key as KlinePeriod)"
+            >
+              {{ t.label }}
+            </button>
+            <button class="ctab more" :class="{ on: inMore || moreOpen }" @click="moreOpen = !moreOpen">
+              更多<i class="caret" :class="{ open: moreOpen }" />
+            </button>
           </div>
-          <div class="chart-tabs sub-tabs">
-            <span class="sub-label">副图</span>
-            <button class="ctab s" :class="{ on: sub === 'macd' }" @click="sub = 'macd'">MACD</button>
-            <button class="ctab s" :class="{ on: sub === 'volume' }" @click="sub = 'volume'">成交量</button>
-            <button class="ctab s" :class="{ on: sub === 'ratio' }" @click="sub = 'ratio'">量比</button>
+          <div v-if="moreOpen" class="chart-tabs more-row">
+            <button
+              v-for="t in MORE_TABS"
+              :key="t.key"
+              class="ctab s"
+              :class="{ on: mode === 'kline' && period === t.key }"
+              @click="switchPeriod(t.key)"
+            >
+              {{ t.label }}
+            </button>
           </div>
 
           <!-- 时段图例：只在出现盘前/集合竞价/盘后时显示，说明底色含义 -->
@@ -387,19 +442,39 @@ const title = computed(() => {
             </span>
           </div>
 
+          <!-- 主图 -->
           <MiniChart
             v-if="mode === 'minute'"
+            part="main"
             :minutes="minutes"
             :prev-close="quote.prev_close ?? 0"
-            :sub="sub"
-            :height="214"
+            :height="196"
           />
           <MiniChart
-            v-else
-            mode="kline"
+            v-else-if="mode === 'five'"
+            part="main"
+            :minutes="minutes"
+            multi-day
+            :height="196"
+          />
+          <MiniChart v-else part="main" mode="kline" :bars="bars" :height="196" />
+
+          <!-- 副图选项：放在副图自己上方，和主图周期栏分开两行 -->
+          <div class="chart-tabs sub-tabs">
+            <span class="sub-label">副图</span>
+            <button class="ctab s" :class="{ on: sub === 'macd' }" @click="sub = 'macd'">MACD</button>
+            <button class="ctab s" :class="{ on: sub === 'volume' }" @click="sub = 'volume'">成交量</button>
+            <button class="ctab s" :class="{ on: sub === 'ratio' }" @click="sub = 'ratio'">量比</button>
+          </div>
+
+          <!-- 副图 -->
+          <MiniChart
+            part="sub"
+            :mode="mode === 'kline' ? 'kline' : 'minute'"
+            :minutes="minutes"
             :bars="bars"
             :sub="sub"
-            :height="214"
+            :height="72"
           />
         </div>
 
@@ -714,9 +789,39 @@ const title = computed(() => {
   font-weight: 600;
 }
 
-.sub-tabs {
-  padding-bottom: 4px;
+/* 「更多」按钮：文字 + 小箭头，展开时箭头翻转 */
+.ctab.more {
+  display: inline-flex;
   align-items: center;
+  gap: 2px;
+}
+
+.caret {
+  width: 0;
+  height: 0;
+  border-left: 3px solid transparent;
+  border-right: 3px solid transparent;
+  border-top: 4px solid currentColor;
+  transition: transform 0.15s ease;
+}
+
+.caret.open {
+  transform: rotate(180deg);
+}
+
+/* 细分周期平铺行：换行排布，避免 8 项挤成横向滚动条看不见尾巴 */
+.more-row {
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 2px 2px 8px;
+  overflow-x: visible;
+}
+
+.sub-tabs {
+  padding: 4px 2px 4px;
+  align-items: center;
+  /* 与主图之间留一条细线，明确「这行属于下面的副图」 */
+  border-top: 1px solid var(--c-line);
 }
 
 .sub-label {

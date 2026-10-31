@@ -93,7 +93,47 @@ export function setUnauthorizedHandler(fn: () => void) {
  * 而插件的顶层 import 只是绑定函数，不触发任何原生调用，在浏览器里也安全。
  */
 const customFetch = IS_TAURI ? (tauriFetch as unknown as typeof fetch) : undefined
-const requestAdapter = customFetch ? adapterFetch({ customFetch }) : adapterFetch()
+
+/**
+ * 给传输层加一次失败重试。
+ *
+ * 线上最常见的报错是 fetchError: network timeout —— 移动网络切换基站、
+ * 屏幕熄灭后唤醒、服务端正忙，都可能让单次请求刚好超时；而这类失败
+ * 在手动重进页面后又立刻恢复正常。给 GET/HEAD 补一次重试，
+ * 就能把这类偶发抖动挡在用户视野之外。
+ * 写请求（下单等）不重试：重复提交的代价远大于省一次点击。
+ *
+ * 注意 Alova 的适配器返回的是 { response, headers, abort } 这组惰性取值函数，
+ * 不是一个已经发出的 Promise，所以重试必须包在 response() 上，
+ * 直接包外层对象只会拿到一个「还没发请求」的对象，重试也就无从谈起。
+ */
+const RETRYABLE = /^(GET|HEAD)$/i
+const MAX_RETRY = 1
+
+function withRetry<A extends (elements: any, method: any) => any>(adapter: A): A {
+  return ((elements: any, method: any) => {
+    const out = adapter(elements, method)
+    const rawResponse = out.response
+    let attempts = 0
+    out.response = async () => {
+      for (;;) {
+        try {
+          return await rawResponse()
+        } catch (err: any) {
+          const retryable =
+            RETRYABLE.test(String(method?.type ?? 'GET')) &&
+            (err?.code === 'NETWORK_ERROR' || err?.name === 'TypeError' || err?.name === 'AbortError')
+          if (!retryable || attempts >= MAX_RETRY) throw err
+          attempts += 1
+        }
+      }
+    }
+    return out
+  }) as A
+}
+
+const baseAdapter = customFetch ? adapterFetch({ customFetch }) : adapterFetch()
+const requestAdapter = withRetry(baseAdapter)
 
 export const alovaInstance = createAlova({
   baseURL: BASE_URL,

@@ -6,6 +6,7 @@ import type {
   Depth,
   IndexMember,
   IndexQuote,
+  KlinePeriod,
   MinutePoint,
   OrderItem,
   Overview,
@@ -55,10 +56,17 @@ export const marketApi = {
 
   depth: (code: string) => alovaInstance.Get<Depth>(`/api/market/depth/${code}`),
 
-  minutes: (code: string, limit = 240) =>
-    alovaInstance.Get<{ code: string; items: MinutePoint[] }>(`/api/market/minutes/${code}`, { params: { limit } }),
+  /**
+   * 分时序列。
+   * days=1 只看当天这条交易日的分钟走势；
+   * days=5 取最近五个自然日首尾相接（「五日」视图）。
+   */
+  minutes: (code: string, limit = 240, days = 1) =>
+    alovaInstance.Get<{ code: string; items: MinutePoint[] }>(`/api/market/minutes/${code}`, {
+      params: { limit, days },
+    }),
 
-  kline: (code: string, period = '1min', limit = 120) =>
+  kline: (code: string, period: KlinePeriod = '1min', limit = 120) =>
     alovaInstance.Get<{ code: string; period: string; items: BarItem[] }>(`/api/market/kline/${code}`, {
       params: { period, limit },
     }),
@@ -73,13 +81,13 @@ export const marketApi = {
       members: IndexMember[]
     }>(`/api/market/index/${code}`),
 
-  indexMinutes: (code: string, limit = 240) =>
+  indexMinutes: (code: string, limit = 240, days = 1) =>
     alovaInstance.Get<{ code: string; items: MinutePoint[] }>(
       `/api/market/index/${code}/minutes`,
-      { params: { limit } },
+      { params: { limit, days } },
     ),
 
-  indexKline: (code: string, period = '5min', limit = 120) =>
+  indexKline: (code: string, period: KlinePeriod = '5min', limit = 120) =>
     alovaInstance.Get<{ code: string; period: string; items: BarItem[] }>(`/api/market/index/${code}/kline`, {
       params: { period, limit },
     }),

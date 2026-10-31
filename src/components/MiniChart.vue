@@ -8,6 +8,7 @@
  * 两条图共享同一 X 轴刻度，扫一眼就能对齐「哪根阳线放量 / 哪段 DIF 上穿」。
  */
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useEventListener } from '@vueuse/core'
 
 /** 交易时段标签，与服务端 BarItem.segment 对齐 */
 type Segment = 'pre' | 'auction' | 'continuous' | 'lunch' | 'post' | 'closed'
@@ -21,6 +22,8 @@ interface Point {
   volume?: number
   /** 该点所属时段，用于给竞价/盘前/盘后区间打底色 */
   segment?: Segment
+  /** 该点所属交易日（五日视图下发）：画日分隔线与当日基准线要用 */
+  day?: string
 }
 interface Bar {
   time: number | string
@@ -79,8 +82,30 @@ const props = withDefaults(
     sub?: 'none' | 'volume' | 'macd' | 'ratio'
     prevClose?: number
     height?: number
+    /**
+     * 画哪一块：
+     *  all  主图 + 副图画在同一块画布（默认，老调用方行为不变）
+     *  main 只画主图
+     *  sub  只画副图
+     *
+     * 为什么要拆：需求要求「周期选项在主图之上、副图选项在副图之上」，
+     * 只有把主图和副图拆成两块画布，两条选项栏才能分别插在各自的上方，
+     * 而不是挤在同一行里。
+     */
+    part?: 'all' | 'main' | 'sub'
+    /** 五日视图：分时点带 day 字段时，画日分隔线与当日开盘基准虚线 */
+    multiDay?: boolean
   }>(),
-  { mode: 'minute', sub: 'none', prevClose: 0, height: 200, minutes: () => [], bars: () => [] },
+  {
+    mode: 'minute',
+    sub: 'none',
+    prevClose: 0,
+    height: 200,
+    part: 'all',
+    multiDay: false,
+    minutes: () => [],
+    bars: () => [],
+  },
 )
 
 const canvasRef = ref<HTMLCanvasElement | null>(null)
@@ -117,13 +142,54 @@ function drawGrid(ctx: CanvasRenderingContext2D, w: number, h: number) {
 function drawMinute(ctx: CanvasRenderingContext2D, w: number, h: number) {
   const pts = props.minutes ?? []
   if (!pts.length) return
-  const base = props.prevClose || pts[0].price
   const prices = pts.map((p) => p.price)
-  const maxDev = Math.max(...prices.map((p) => Math.abs(p - base)), base * 0.005)
-  const hi = base + maxDev
-  const lo = base - maxDev
+  const multi = props.multiDay && pts.some((p) => !!p.day)
+  // 五日视图里每天都有自己的昨收基准，用统一基准会把偏离放大到看不出形状；
+  // 所以五日按全区间最高最低定纵轴，单日仍沿用「昨收上下对称」的常规画法。
+  let hi: number
+  let lo: number
+  const base = props.prevClose || pts[0].price
+  if (multi) {
+    const pad = (Math.max(...prices) - Math.min(...prices) || base * 0.01) * 0.12
+    hi = Math.max(...prices) + pad
+    lo = Math.min(...prices) - pad
+  } else {
+    const maxDev = Math.max(...prices.map((p) => Math.abs(p - base)), base * 0.005)
+    hi = base + maxDev
+    lo = base - maxDev
+  }
   const yOf = (p: number) => h - ((p - lo) / (hi - lo || 1)) * h
   const xOf = (i: number) => (i / Math.max(1, pts.length - 1)) * w
+
+  // 五日视图：先在日界处画竖线，并把每天的第一笔价格当作该日基准画虚线
+  if (multi) {
+    const dayStart: number[] = []
+    pts.forEach((p, i) => {
+      if (i === 0 || p.day !== pts[i - 1].day) dayStart.push(i)
+    })
+    ctx.strokeStyle = 'rgba(255,255,255,0.18)'
+    ctx.lineWidth = 1
+    dayStart.forEach((i, k) => {
+      if (k > 0) {
+        const x = xOf(i)
+        ctx.beginPath()
+        ctx.moveTo(x, 0)
+        ctx.lineTo(x, h)
+        ctx.stroke()
+      }
+      // 当日基准线：以当日第一笔价格为准
+      const y = yOf(pts[i].price)
+      ctx.save()
+      ctx.setLineDash([3, 5])
+      ctx.strokeStyle = 'rgba(255,255,255,0.2)'
+      ctx.beginPath()
+      ctx.moveTo(xOf(i), y)
+      const next = dayStart[k + 1] ?? pts.length
+      ctx.lineTo(xOf(next - 1), y)
+      ctx.stroke()
+      ctx.restore()
+    })
+  }
 
   // 先用底色标出盘前/集合竞价/盘后区间，再画价格线，线压在上面才清楚
   paintSegments(ctx, w, h, pts.map((p) => p.segment))
@@ -382,6 +448,20 @@ function render() {
   const H = rect.height
   ctx.clearRect(0, 0, W, H)
 
+  // 拆分模式：各自占满自己的画布高度，中间由模板插入副图选项栏
+  if (props.part === 'main') {
+    drawGrid(ctx, W, H)
+    if (props.mode === 'kline') drawKline(ctx, W, H)
+    else drawMinute(ctx, W, H)
+    return
+  }
+  if (props.part === 'sub') {
+    if (props.sub === 'volume') drawVolume(ctx, W, H)
+    else if (props.sub === 'ratio') drawRatio(ctx, W, H)
+    else drawMacd(ctx, W, H)
+    return
+  }
+
   const showSub = props.sub !== 'none'
   const gap = showSub ? 5 : 0
   const subH = showSub ? Math.round((H - gap) * 0.3) : 0
@@ -426,15 +506,20 @@ onMounted(() => {
     ro = new ResizeObserver(() => render())
     ro.observe(canvasRef.value)
   }
-  window.addEventListener('resize', render)
 })
+
+// 视口尺寸变化交给 vueuse：自动解绑，省掉一对 add/removeEventListener
+useEventListener(window, 'resize', () => render())
 
 onBeforeUnmount(() => {
   ro?.disconnect()
-  window.removeEventListener('resize', render)
 })
 
-watch(() => [props.minutes, props.bars, props.mode, props.sub], () => render(), { deep: true })
+watch(
+  () => [props.minutes, props.bars, props.mode, props.sub, props.part, props.multiDay],
+  () => render(),
+  { deep: true },
+)
 </script>
 
 <template>

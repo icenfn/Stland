@@ -35,6 +35,9 @@ const market = useMarket()
 /** 五屏顺序，与底栏一一对应；index 就是这个顺序 */
 const PATHS = ['/', '/market', '/watch', '/trade', '/profile'] as const
 
+/** 与 PATHS 一一对应的页名，显示在应用栏品牌名右侧 */
+const PAGE_NAMES = ['概览', '行情', '自选', '交易', '我的'] as const
+
 const active = ref(0)
 const swiperRef = ref<any>(null)
 
@@ -103,6 +106,9 @@ defineExpose({ go, active })
          交易时段在行情页与 K 线头部会各自呈现，放在全局顶栏反而每屏都在占位。 -->
     <header class="top-bar">
       <span class="brand">股岛</span>
+      <!-- 当前页名：跟着 swiper 走的活标签，切页时与此屏标题同步，
+           省得用户滑到第三屏还得回头数格子确认自己在哪 -->
+      <span class="page-name">{{ PAGE_NAMES[active] }}</span>
       <span class="spacer" />
     </header>
 
@@ -163,6 +169,17 @@ defineExpose({ go, active })
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
+}
+
+.page-name {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--c-text-2);
+  letter-spacing: 0.5px;
+  white-space: nowrap;
 }
 
 .spacer {
