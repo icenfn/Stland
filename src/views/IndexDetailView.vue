@@ -38,6 +38,7 @@ import type {
 } from '@/api/types'
 import AppBar from '@/components/AppBar.vue'
 import KLineChart from '@/components/KLineChart.vue'
+import type { SubKind } from '@/components/MiniChart.vue'
 import TradeSheet from '@/components/TradeSheet.vue'
 import { fmtAmount, fmtPct, fmtPrice, fmtVolume, trendClass } from '@/utils/format'
 
@@ -71,7 +72,7 @@ const period = ref('5min')
  */
 const fiveDay = ref(false)
 /** 副图：无 / 成交量 / MACD —— 纯展示切换，不产生请求 */
-const sub = ref<'volume' | 'macd' | 'ratio'>('macd')
+const sub = ref<SubKind>('macd')
 
 const sheetShow = ref(false)
 const sheetSide = ref<'buy' | 'sell'>('buy')
@@ -364,42 +365,40 @@ const title = computed(() => {
         </div>
       </section>
 
-      <!-- ② 图表卡：主图 + 可切换副图，与盘口/分布窄栏同屏对照 -->
-      <section class="chart-row">
-        <div class="chart-card">
-          <KLineChart
-            :mode="mode"
-            :period="period"
-            :five-day="fiveDay"
-            :sub="sub"
-            :minutes="minutes"
-            :bars="bars"
-            :prev-close="quote.prev_close ?? 0"
-            :tabs="MAIN_TABS"
-            :more-periods="MORE_CHIPS"
-            :main-height="150"
-            :sub-height="64"
-            @select="onChartSelect"
-            @update:sub="sub = $event"
-          />
-        </div>
-
-                <!-- ③ 涨跌分布：与图表上下排列 -->
-        <div class="dist-card">
-          <div class="dist-head">
-            <span class="dist-title">涨跌分布</span>
-            <span class="dlegend">
-              <span class="up">涨 {{ distribution.up }}</span>
-              <span class="flat">平 {{ distribution.flat }}</span>
-              <span class="down">跌 {{ distribution.down }}</span>
-            </span>
-          </div>
-          <div class="dbar">
-            <i class="seg up" :style="{ width: distribution.upPct + '%' }"></i>
-            <i class="seg flat" :style="{ width: distribution.flatPct + '%' }"></i>
-            <i class="seg down" :style="{ width: distribution.downPct + '%' }"></i>
-          </div>
-        </div>
+      <!-- ② 图表卡：主图选项 / 主图·副图·时间轴 / 右侧涨跌分布
+           指数没有委托簿，所以右侧窄栏放涨跌家数分布，由组件的 side 插槽塞入；
+           个股那边同一位置则渲染五档，两页纵向节奏保持一致。 -->
+      <section class="chart-card">
+        <KLineChart
+          :mode="mode"
+          :period="period"
+          :five-day="fiveDay"
+          :sub="sub"
+          :minutes="minutes"
+          :bars="bars"
+          :prev-close="quote.prev_close ?? 0"
+          :tabs="MAIN_TABS"
+          :more-periods="MORE_CHIPS"
+          :is-index="true"
+          :main-height="150"
+          :sub-height="64"
+          @select="onChartSelect"
+          @update:sub="sub = $event"
+        >
+          <template #side>
+            <div class="dist">
+              <div class="dist-title">涨跌分布</div>
+              <div class="dist-line"><span class="up">涨</span><b class="tabular">{{ distribution.up }}</b></div>
+              <div class="dist-line"><span class="flat">平</span><b class="tabular">{{ distribution.flat }}</b></div>
+              <div class="dist-line"><span class="down">跌</span><b class="tabular">{{ distribution.down }}</b></div>
+              <div class="dbar">
+                <i class="seg up" :style="{ width: distribution.upPct + '%' }"></i>
+                <i class="seg flat" :style="{ width: distribution.flatPct + '%' }"></i>
+                <i class="seg down" :style="{ width: distribution.downPct + '%' }"></i>
+              </div>
+            </div>
+          </template>
+        </KLineChart>
       </section>
 
       <section v-if="isIndex && members.length" class="card info-card">

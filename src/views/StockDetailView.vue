@@ -38,6 +38,7 @@ import type {
 } from '@/api/types'
 import AppBar from '@/components/AppBar.vue'
 import KLineChart from '@/components/KLineChart.vue'
+import type { SubKind } from '@/components/MiniChart.vue'
 import TradeSheet from '@/components/TradeSheet.vue'
 import { fmtAmount, fmtPct, fmtPrice, fmtVolume, trendClass } from '@/utils/format'
 
@@ -67,7 +68,7 @@ const mode = ref<'minute' | 'kline'>('minute')
 const fiveDay = ref(false)
 const period = ref<KlinePeriod>('day')
 /** 副图：无 / 成交量 / MACD —— 纯展示切换，不产生请求 */
-const sub = ref<'volume' | 'macd' | 'ratio'>('macd')
+const sub = ref<SubKind>('macd')
 /** 「更多」展开态：平铺低频周期，避免六个主项被稀释成一排小字 */
 const moreOpen = ref(false)
 
@@ -164,17 +165,6 @@ const distribution = computed(() => {
   const total = Math.max(1, up + down + flat)
   return { up, down, flat, upPct: (up / total) * 100, flatPct: (flat / total) * 100, downPct: (down / total) * 100 }
 })
-
-/** 五档：卖5→卖1 从上到下，买1→买5 紧随其后 —— 与交易所行情软件的排列一致 */
-const asksDesc = computed(() => [...(depth.value?.asks ?? [])].reverse())
-const bidsList = computed(() => depth.value?.bids ?? [])
-
-/** 深度里的量以「手」为单位展示更符合看盘习惯 */
-function fmtHands(v: number) {
-  if (!v) return '—'
-  if (v >= 10000) return `${(v / 10000).toFixed(2)}万`
-  return String(Math.round(v))
-}
 
 /**
  * 把个股报价与指数报价统一成 DetailQuote。
@@ -414,62 +404,42 @@ const title = computed(() => {
         </div>
       </section>
 
-      <!-- ② 图表卡：主图 + 可切换副图，与盘口/分布窄栏同屏对照 -->
-      <section class="chart-row">
-        <div class="chart-card">
-          <KLineChart
-            v-model:more-open="moreOpen"
-            :mode="mode"
-            :period="period"
-            :five-day="fiveDay"
-            :sub="sub"
-            :minutes="minutes"
-            :bars="bars"
-            :prev-close="quote.prev_close ?? 0"
-            :tabs="MAIN_TABS"
-            :more-periods="MORE_CHIPS"
-            @select="onChartSelect"
-            @update:sub="sub = $event"
-          />
-        </div>
-
-        <!-- ③ 盘口位：个股五档 / 指数涨跌分布，同一格位 -->
-        <div class="side-card">
-          <template v-if="!isIndex">
-            <div v-if="depth" class="depth">
-              <div v-for="(a, i) in asksDesc" :key="'a' + i" class="drow">
-                <span class="dlabel">卖{{ asksDesc.length - i }}</span>
-                <span class="dprice up tabular">{{ fmtPrice(a.price) }}</span>
-                <span class="dvol tabular">{{ fmtHands(a.volume) }}</span>
-              </div>
-              <div class="dsep"></div>
-              <div v-for="(b, i) in bidsList" :key="'b' + i" class="drow">
-                <span class="dlabel">买{{ i + 1 }}</span>
-                <span class="dprice down tabular">{{ fmtPrice(b.price) }}</span>
-                <span class="dvol tabular">{{ fmtHands(b.volume) }}</span>
-              </div>
-            </div>
-            <div v-else class="empty">盘口加载中…</div>
-          </template>
-
-          <template v-else>
+      <!-- ② 图表卡：主图选项独占一行；主图 · 副图 · 时间轴居左，五档居右
+           五档已并入图表组件，与 K 线同屏才能相互印证；指数没有委托簿，
+           组件不渲染五档，改由 side 插槽放涨跌家数分布。 -->
+      <section class="chart-card">
+        <KLineChart
+          v-model:more-open="moreOpen"
+          :mode="mode"
+          :period="period"
+          :five-day="fiveDay"
+          :sub="sub"
+          :minutes="minutes"
+          :bars="bars"
+          :prev-close="quote.prev_close ?? 0"
+          :tabs="MAIN_TABS"
+          :more-periods="MORE_CHIPS"
+          :depth="depth"
+          :is-index="isIndex"
+          :main-height="150"
+          :sub-height="64"
+          @select="onChartSelect"
+          @update:sub="sub = $event"
+        >
+          <template #side>
             <div class="dist">
-              <div class="dnum up">{{ distribution.up }}</div>
-              <div class="dnum flat">{{ distribution.flat }}</div>
-              <div class="dnum down">{{ distribution.down }}</div>
-            </div>
-            <div class="dbar">
-              <i class="seg up" :style="{ width: distribution.upPct + '%' }"></i>
-              <i class="seg flat" :style="{ width: distribution.flatPct + '%' }"></i>
-              <i class="seg down" :style="{ width: distribution.downPct + '%' }"></i>
-            </div>
-            <div class="dlegend">
-              <span class="up">涨 {{ distribution.up }}</span>
-              <span class="flat">平 {{ distribution.flat }}</span>
-              <span class="down">跌 {{ distribution.down }}</span>
+              <div class="dist-title">涨跌分布</div>
+              <div class="dist-line"><span class="up">涨</span><b class="tabular">{{ distribution.up }}</b></div>
+              <div class="dist-line"><span class="flat">平</span><b class="tabular">{{ distribution.flat }}</b></div>
+              <div class="dist-line"><span class="down">跌</span><b class="tabular">{{ distribution.down }}</b></div>
+              <div class="dbar">
+                <i class="seg up" :style="{ width: distribution.upPct + '%' }"></i>
+                <i class="seg flat" :style="{ width: distribution.flatPct + '%' }"></i>
+                <i class="seg down" :style="{ width: distribution.downPct + '%' }"></i>
+              </div>
             </div>
           </template>
-        </div>
+        </KLineChart>
       </section>
 
       <!-- ④ 资料区：个股是题材与规则，指数是成分股及其涨跌 -->

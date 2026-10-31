@@ -19,6 +19,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useMarket } from '@/stores/market'
+import { setHomeHandler } from '@/composables/useBackExit'
 import OverviewPanel from './panels/OverviewPanel.vue'
 import MarketPanel from './panels/MarketPanel.vue'
 import WatchPanel from './panels/WatchPanel.vue'
@@ -86,6 +87,9 @@ watch(
 onMounted(async () => {
   active.value = clamp(Number(route.meta.panel) || 0)
   market.start(1800)
+  // 把「滑回首页」交给返回键处理：框架页按返回且不在第 0 屏时，
+  // 由它把 swiper 横向滑回首页（切 tab 用 replace，不产生历史，因此不动路由）。
+  setHomeHandler(() => go(0))
   // 首屏尺寸要等布局稳定后再让内核量一次，否则宽度按 0 算会全部叠在一起
   await nextTick()
   const inst = instance()
@@ -94,6 +98,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  setHomeHandler(null)
   market.stop()
 })
 

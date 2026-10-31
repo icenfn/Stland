@@ -1,20 +1,36 @@
+<script lang="ts">
+/**
+ * 副图种类：图表组件与两个详情页都要用，因此放在普通 script 块里导出。
+ * `<script setup>` 内不允许 export，独立声明块才能被外部 import type。
+ */
+export type SubKind = 'none' | 'volume' | 'macd' | 'kdj' | 'ratio' | 'game'
+</script>
+
 <script setup lang="ts">
 /**
- * 轻量 K 线/分时绘制：Canvas 手绘，避免引入 ECharts 体积（移动端首屏更关键）。
+ * 轻量 K 线 / 分时 / 指标绘制：Canvas 手绘，避免引入 ECharts 的体积
+ * （移动端首屏体积是硬约束，一张图不值得几百 KB）。
  *
- * 时间轴口径（本轮重点修复）
- * -------------------------
- * 上一版所有横坐标都按「点数」归一：`x = i / (n - 1) * w`。
- * 结果是开盘半小时只有二十来个点，这一小段被横向拉满整幅图，
- * 看起来像一条「全天走完」的曲线 —— 既看不出当前走到一天里的什么位置，
- * 也看不出后半段还是空白。五日视图同理，跨五天的一段被压成一天的样子。
+ * 时间轴口径
+ * ----------
+ * 横坐标一律用「时间位」而不是「点数」：一天固定 240 个分钟位
+ * （9:30–11:30 + 13:00–15:00），已经走到的部分从左往右画，未走到的分钟位留白。
+ * 若按 `i / (n - 1) * w` 归一，开盘二十分钟只有二十来个点，这一小段会被横向
+ * 拉满整幅图 —— 看起来像「全天走完」，既读不出当前走到一天里的什么位置，
+ * 也看不出后半段还是空白。五日视图按每天 240 位依次排布并画日分隔线。
  *
- * 现在改为「时间位」坐标系：横轴固定为一天的 240 个分钟位（A 股连续竞价
- * 9:30–11:30 + 13:00–15:00），价格线只画出「已经走到的那一段」，
- * 剩下的分钟位留白。五日则按每天 240 位依次排布，并画日分隔线。
- * 这样开盘时线从左边开始长出来，收盘时刚好走到右端 —— 时间顺序一目了然。
+ * 横轴刻度由 `part="axis"` 单独渲染，交给 K 线组件贴在副图正下方，
+ * 这样刻度与主图/副图共用同一套时间位，三者永远对齐。
  *
- * 副图：主图下方可按需切换「成交量」或「MACD」，X 轴与主图共用同一套时间位。
+ * 副图口径
+ * --------
+ * volume 成交量、macd MACD、kdj KDJ、ratio 量比、game 分时博弈。
+ * 除「分时博弈」外都是公开的标准算法，按常规参数实现：
+ *   MACD 12/26/9；KDJ 9/3/3；量比 = 本根量 ÷ 本区间均量。
+ * 「分时博弈」需要逐笔的主动买卖方向，服务端没有下发该数据，因此用
+ * 「相邻两点价格方向 × 该点成交量」估算净流入并累计，再叠一条均值线。
+ * 它是量价方向的近似，不等同券商的分时博弈（那是按单笔金额分档统计的），
+ * 这一点在界面上以「估算」提示，避免误读。
  */
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
@@ -26,11 +42,11 @@ interface Point {
   price: number
   /** 分时均价；K 线数据没有该字段，因此可选 */
   avg?: number
-  /** 分时逐点成交量（股），用于成交量副图 */
+  /** 分时逐点成交量（股） */
   volume?: number
   /** 该点所属时段，用于给竞价/盘前/盘后区间打底色 */
   segment?: Segment
-  /** 该点所属交易日（仅五日视图下发），画日分隔线与当日基准线要用 */
+  /** 该点所属交易日（仅五日视图下发） */
   day?: string
 }
 interface Bar {
@@ -49,9 +65,9 @@ const MINUTES_PER_DAY = 240
 /**
  * 非连续竞价时段的底色。
  *
- * 为什么不改变红绿柱本身：红绿是「涨跌」的唯一编码，改掉就分不清方向了。
+ * 为什么不动红绿柱本身：红绿是「涨跌」的唯一编码，改掉就分不清方向了。
  * 用整列半透明底色标注时段，既能看出「这段是集合竞价 / 盘前 / 盘后」，
- * 又不会和涨跌信息打架。连续竞价不画底色，保持画面干净。
+ * 也不与涨跌信息打架。连续竞价不画底色，保持画面干净。
  */
 const SEGMENT_TINT: Record<string, string> = {
   pre: 'rgba(96,140,255,0.14)',
@@ -60,16 +76,10 @@ const SEGMENT_TINT: Record<string, string> = {
   closed: 'rgba(140,150,165,0.08)',
 }
 
-/**
- * 把点的序号映射到「时间位」。
- *
- * 单日：第 i 个点就落在第 i 个分钟位（服务端已按分钟补齐/对齐）。
- * 五日：每天重新从 0 数，整体偏移 dayIndex × 240，并用 day 字段切日。
- */
 interface Timeline {
   /** 每个点对应的时间位序号 */
   pos: number[]
-  /** 总时间位数量，即横轴的满格长度 */
+  /** 时间位总数，即横轴满格长度 */
   cap: number
   /** 每天的起始时间位（五日画分隔线用） */
   dayStarts: Array<{ day: string; pos: number }>
@@ -80,7 +90,6 @@ function buildTimeline(pts: Point[], multiDay: boolean, slots: number): Timeline
     const cap = slots > 0 ? slots : MINUTES_PER_DAY
     return { pos: pts.map((_, i) => i), cap, dayStarts: [] }
   }
-
   const pos: number[] = []
   const dayStarts: Array<{ day: string; pos: number }> = []
   let dayIndex = -1
@@ -106,17 +115,18 @@ const props = withDefaults(
     minutes?: Point[]
     bars?: Bar[]
     mode?: 'minute' | 'kline'
-    /** 副图类型：none 不显示、volume 成交量、macd MACD、ratio 量比 */
-    sub?: 'none' | 'volume' | 'macd' | 'ratio'
+    /** 副图类型；axis 模式不需要该字段 */
+    sub?: SubKind
     prevClose?: number
     height?: number
     /**
      * 渲染哪一块：
      *  all  主图 + 副图同画布（默认）
-     *  main 只画主图 —— 与副图拆成两个 canvas 时用，副图选项条才能落在两者之间
+     *  main 只画主图（与副图拆成两个 canvas，副图选项条才能落在两者之间）
      *  sub  只画副图
+     *  axis 只画横轴刻度
      */
-    part?: 'all' | 'main' | 'sub'
+    part?: 'all' | 'main' | 'sub' | 'axis'
     /** 五日视图：分时点带 day 字段时启用，按日画分隔线与当日基准虚线 */
     multiDay?: boolean
     /** 时间位总数；0 表示按「一天 240 位」自动推断 */
@@ -140,12 +150,14 @@ let ro: ResizeObserver | null = null
 
 const UP = '#ff4d4f'
 const DOWN = '#12b76a'
+const LINE_GOLD = '#e8b339'
+const LINE_BLUE = '#7aa9ff'
 
 function dpr() {
   return Math.min(window.devicePixelRatio || 1, 2)
 }
 
-/** 稀疏网格：只画横向基准线与分隔线，避免副图区域被网格切碎 */
+/** 稀疏网格：只画几条参考线，避免把副图区域切碎 */
 function drawGrid(ctx: CanvasRenderingContext2D, w: number, h: number) {
   ctx.strokeStyle = 'rgba(255,255,255,0.06)'
   ctx.lineWidth = 1
@@ -165,22 +177,18 @@ function drawGrid(ctx: CanvasRenderingContext2D, w: number, h: number) {
   }
 }
 
-/**
- * 按时段铺底色。
- *
- * 现在按「时间位」而不是「点数」算列宽：同一段只有几分钟也不会被拉宽，
- * 底色始终贴着真实的时间位置。
- */
+/** 按时段铺底色：按时间位算列宽，同一段只有几分钟也不会被拉宽 */
 function paintSegments(
   ctx: CanvasRenderingContext2D,
   w: number,
   h: number,
   segments: Array<Segment | undefined>,
-  tl: Timeline,
+  pos: number[],
+  cap: number,
 ) {
   const n = segments.length
   if (!n) return
-  const slot = w / Math.max(1, tl.cap)
+  const slot = w / Math.max(1, cap)
   let start = 0
   while (start < n) {
     const seg = segments[start]
@@ -189,9 +197,8 @@ function paintSegments(
     const tint = seg ? SEGMENT_TINT[seg] : undefined
     if (tint) {
       ctx.fillStyle = tint
-      // 起点用格子的左边界，终点用最后一格的右边界，保证覆盖完整
-      const x0 = tl.pos[start] * slot
-      const x1 = (tl.pos[end] + 1) * slot
+      const x0 = pos[start] * slot
+      const x1 = (pos[end] + 1) * slot
       ctx.fillRect(x0, 0, Math.max(1, x1 - x0), h)
     }
     start = end + 1
@@ -207,14 +214,12 @@ function drawMinute(ctx: CanvasRenderingContext2D, w: number, h: number) {
   const xOf = (i: number) => tl.pos[i] * slot + slot / 2
 
   const base = props.prevClose || pts[0].price
-  const prices = pts.map((p) => p.price)
-  const maxDev = Math.max(...prices.map((p) => Math.abs(p - base)), base * 0.005)
+  const maxDev = Math.max(...pts.map((p) => Math.abs(p.price - base)), base * 0.005)
   const hi = base + maxDev
   const lo = base - maxDev
   const yOf = (p: number) => h - ((p - lo) / (hi - lo || 1)) * h
 
-  // 先用底色标出盘前/集合竞价/盘后区间，再画价格线，线压在上面才清楚
-  paintSegments(ctx, w, h, pts.map((p) => p.segment), tl)
+  paintSegments(ctx, w, h, pts.map((p) => p.segment), tl.pos, tl.cap)
 
   // 昨收虚线
   ctx.strokeStyle = 'rgba(255,255,255,0.22)'
@@ -225,8 +230,7 @@ function drawMinute(ctx: CanvasRenderingContext2D, w: number, h: number) {
   ctx.stroke()
   ctx.setLineDash([])
 
-  // 五日视图：按交易日画分隔线与当日基准价虚线。
-  // 每根竖线落在该日第一个时间位上，因此和真实时间刻度对齐。
+  // 五日：日分隔线 + 当日基准虚线
   if (props.multiDay && tl.dayStarts.length) {
     ctx.strokeStyle = 'rgba(255,255,255,0.14)'
     ctx.setLineDash([2, 3])
@@ -241,27 +245,25 @@ function drawMinute(ctx: CanvasRenderingContext2D, w: number, h: number) {
     }
     ctx.setLineDash([3, 4])
     ctx.strokeStyle = 'rgba(232,179,57,0.35)'
-    const firstIdxOfDay = new Map<string, number>()
+    const seen = new Set<string>()
     pts.forEach((p, i) => {
       const d = p.day ?? ''
-      if (!firstIdxOfDay.has(d)) firstIdxOfDay.set(d, i)
-    })
-    for (const i of firstIdxOfDay.values()) {
-      const y = yOf(pts[i].price)
+      if (seen.has(d)) return
+      seen.add(d)
+      const y = yOf(p.price)
       ctx.beginPath()
       ctx.moveTo(xOf(i), y)
       ctx.lineTo(w, y)
       ctx.stroke()
-    }
+    })
     ctx.setLineDash([])
   }
 
   const last = pts[pts.length - 1].price
   const rising = last >= base
   const color = rising ? UP : DOWN
-
-  // 渐变填充：只填到最后一个已走到的分钟位，右侧留白
   const lastX = xOf(pts.length - 1)
+
   const grad = ctx.createLinearGradient(0, 0, 0, h)
   grad.addColorStop(0, rising ? 'rgba(255,77,79,0.28)' : 'rgba(18,183,106,0.28)')
   grad.addColorStop(1, 'rgba(0,0,0,0)')
@@ -274,23 +276,19 @@ function drawMinute(ctx: CanvasRenderingContext2D, w: number, h: number) {
   ctx.fill()
 
   // 均价线
-  const avgs: Array<{ i: number; v: number }> = []
-  pts.forEach((p, i) => {
-    if (typeof p.avg === 'number' && p.avg > 0) avgs.push({ i, v: p.avg })
-  })
+  const avgs = pts.map((p, i) => ({ i, v: p.avg })).filter((a) => typeof a.v === 'number' && a.v > 0)
   if (avgs.length) {
     ctx.beginPath()
     avgs.forEach((a, k) => {
       const x = xOf(a.i)
-      const y = yOf(a.v)
+      const y = yOf(a.v as number)
       k === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)
     })
-    ctx.strokeStyle = '#e8b339'
+    ctx.strokeStyle = LINE_GOLD
     ctx.lineWidth = 1
     ctx.stroke()
   }
 
-  // 价格线
   ctx.beginPath()
   pts.forEach((p, i) => {
     const x = xOf(i)
@@ -301,14 +299,13 @@ function drawMinute(ctx: CanvasRenderingContext2D, w: number, h: number) {
   ctx.lineWidth = 1.6
   ctx.stroke()
 
-  // 最新价光点
   ctx.beginPath()
   ctx.arc(lastX, yOf(last), 3, 0, Math.PI * 2)
   ctx.fillStyle = color
   ctx.fill()
 }
 
-/** 主图：K 线（K 线按根数等距排布即可，一根就是一根，不涉及「一天 240 位」） */
+/** 主图：K 线（一根就是一根，等距排布，不涉及「一天 240 位」） */
 function drawKline(ctx: CanvasRenderingContext2D, w: number, h: number) {
   const bars = props.bars ?? []
   if (!bars.length) return
@@ -319,25 +316,25 @@ function drawKline(ctx: CanvasRenderingContext2D, w: number, h: number) {
   const slot = w / bars.length
   const bodyW = Math.max(1.5, slot * 0.62)
 
-  // 时段底色：集合竞价/盘前/盘后整列着色，红绿柱本身仍只表示涨跌
-  paintSegments(ctx, w, h, bars.map((b) => b.segment), {
-    pos: bars.map((_, i) => i),
-    cap: bars.length,
-    dayStarts: [],
-  })
+  paintSegments(
+    ctx,
+    w,
+    h,
+    bars.map((b) => b.segment),
+    bars.map((_, i) => i),
+    bars.length,
+  )
 
   bars.forEach((b, i) => {
     const x = slot * i + slot / 2
     const rising = b.close >= b.open
     ctx.strokeStyle = rising ? UP : DOWN
     ctx.fillStyle = rising ? UP : DOWN
-    // 影线
     ctx.beginPath()
     ctx.moveTo(x, yOf(b.high))
     ctx.lineTo(x, yOf(b.low))
     ctx.lineWidth = 1
     ctx.stroke()
-    // 实体
     const y1 = yOf(Math.max(b.open, b.close))
     const y2 = yOf(Math.min(b.open, b.close))
     ctx.fillRect(x - bodyW / 2, y1, bodyW, Math.max(1, y2 - y1))
@@ -346,79 +343,77 @@ function drawKline(ctx: CanvasRenderingContext2D, w: number, h: number) {
 
 /** 副图：成交量 —— 颜色跟随当根涨跌，高度按区间最大量归一 */
 function drawVolume(ctx: CanvasRenderingContext2D, w: number, h: number) {
-  const bars = props.bars ?? []
-  const pts = props.minutes ?? []
-  const isKline = props.mode === 'kline'
-
-  if (isKline) {
+  if (props.mode === 'kline') {
+    const bars = props.bars ?? []
     const n = bars.length
     if (!n) return
-    const vols = bars.map((b) => b.volume || 0)
-    const maxV = Math.max(...vols, 1)
+    const maxV = Math.max(...bars.map((b) => b.volume || 0), 1)
     const slot = w / n
     const barW = Math.max(1, slot * 0.62)
-    vols.forEach((v, i) => {
-      const bh = (v / maxV) * (h - 1)
-      ctx.fillStyle = bars[i].close >= bars[i].open ? 'rgba(255,77,79,0.75)' : 'rgba(18,183,106,0.75)'
+    bars.forEach((b, i) => {
+      const bh = ((b.volume || 0) / maxV) * (h - 1)
+      ctx.fillStyle = b.close >= b.open ? 'rgba(255,77,79,0.75)' : 'rgba(18,183,106,0.75)'
       const x = slot * i + (slot - barW) / 2
       ctx.fillRect(x, h - bh, barW, Math.max(1, bh))
     })
     return
   }
 
-  const n = pts.length
-  if (!n) return
+  const pts = props.minutes ?? []
+  if (!pts.length) return
   const tl = buildTimeline(pts, props.multiDay, props.slots)
   const slot = w / Math.max(1, tl.cap)
   const maxV = Math.max(...pts.map((p) => p.volume || 0), 1)
+  const barW = Math.max(1, slot * 0.62)
 
   pts.forEach((p, i) => {
     const v = p.volume || 0
     const bh = (v / maxV) * (h - 1)
     const prev = i === 0 ? props.prevClose || p.price : pts[i - 1].price
     ctx.fillStyle = p.price >= prev ? 'rgba(255,77,79,0.75)' : 'rgba(18,183,106,0.75)'
-    const barW = Math.max(1, slot * 0.62)
     ctx.fillRect(tl.pos[i] * slot + (slot - barW) / 2, h - bh, barW, Math.max(1, bh))
   })
 }
 
-/** 指数移动平均：MACD 的底层运算 */
+/** 指数移动平均：MACD / 均线共用 */
 function ema(values: number[], period: number): number[] {
   if (!values.length) return []
   const k = 2 / (period + 1)
   const out: number[] = [values[0]]
-  for (let i = 1; i < values.length; i += 1) {
-    out.push(values[i] * k + out[i - 1] * (1 - k))
-  }
+  for (let i = 1; i < values.length; i += 1) out.push(values[i] * k + out[i - 1] * (1 - k))
   return out
+}
+
+/** 当前副图所依据的收盘序列与横坐标 */
+function seriesBasis(): { closes: number[]; pos: number[]; cap: number } | null {
+  if (props.mode === 'kline') {
+    const bars = props.bars ?? []
+    if (!bars.length) return null
+    return { closes: bars.map((b) => b.close), pos: bars.map((_, i) => i), cap: bars.length }
+  }
+  const pts = props.minutes ?? []
+  if (!pts.length) return null
+  const tl = buildTimeline(pts, props.multiDay, props.slots)
+  return { closes: pts.map((p) => p.price), pos: tl.pos, cap: tl.cap }
 }
 
 /** 副图：MACD —— DIF/DEA 双线 + 红绿柱，零轴居中对称 */
 function drawMacd(ctx: CanvasRenderingContext2D, w: number, h: number) {
-  const isKline = props.mode === 'kline'
-  const closes = isKline
-    ? (props.bars ?? []).map((b) => b.close)
-    : (props.minutes ?? []).map((p) => p.price)
-  if (closes.length < 2) return
-
+  const basis = seriesBasis()
+  if (!basis || basis.closes.length < 2) return
+  const { closes, pos, cap } = basis
   const e12 = ema(closes, 12)
   const e26 = ema(closes, 26)
   const dif = closes.map((_, i) => e12[i] - e26[i])
   const dea = ema(dif, 9)
   const hist = dif.map((d, i) => (d - dea[i]) * 2)
 
-  const absMax = Math.max(...dif.map(Math.abs), ...dea.map(Math.abs), ...hist.map(Math.abs), 0.0001)
+  const absMax = Math.max(...dif.map(Math.abs), ...dea.map(Math.abs), ...hist.map(Math.abs), 1e-4)
   const zero = h / 2
   const yOf = (v: number) => zero - (v / absMax) * (h / 2 - 1)
+  const slot = w / Math.max(1, cap)
+  const xOf = (i: number) => pos[i] * slot + slot / 2
 
-  // 与主图共用时间位：分时按分钟位，K 线按根数
-  const tl = isKline
-    ? { pos: closes.map((_, i) => i), cap: closes.length }
-    : buildTimeline(props.minutes ?? [], props.multiDay, props.slots)
-  const slot = w / Math.max(1, tl.cap)
-  const xOf = (i: number) => tl.pos[i] * slot + slot / 2
-
-  // 零轴
   ctx.strokeStyle = 'rgba(255,255,255,0.18)'
   ctx.lineWidth = 1
   ctx.beginPath()
@@ -426,7 +421,6 @@ function drawMacd(ctx: CanvasRenderingContext2D, w: number, h: number) {
   ctx.lineTo(w, zero)
   ctx.stroke()
 
-  // 柱状（放大两倍便于肉眼分辨，与常见口径一致）
   const barW = Math.max(1, slot * 0.55)
   hist.forEach((v, i) => {
     ctx.fillStyle = v >= 0 ? 'rgba(255,77,79,0.8)' : 'rgba(18,183,106,0.8)'
@@ -434,7 +428,6 @@ function drawMacd(ctx: CanvasRenderingContext2D, w: number, h: number) {
     ctx.fillRect(xOf(i) - barW / 2, Math.min(zero, y2), barW, Math.max(1, Math.abs(y2 - zero)))
   })
 
-  // DIF / DEA 双线
   const line = (vals: number[], color: string) => {
     ctx.beginPath()
     vals.forEach((v, i) => {
@@ -446,22 +439,97 @@ function drawMacd(ctx: CanvasRenderingContext2D, w: number, h: number) {
     ctx.lineWidth = 1.2
     ctx.stroke()
   }
-  line(dif, '#e8b339')
-  line(dea, '#7aa9ff')
+  line(dif, LINE_GOLD)
+  line(dea, LINE_BLUE)
+}
+
+/**
+ * 副图：KDJ（9,3,3 常规参数）。
+ *
+ * RSV = (C - LLV(L,9)) / (HHV(H,9) - LLV(L,9)) × 100
+ * K = 2/3·K(前) + 1/3·RSV，D = 2/3·D(前) + 1/3·K，J = 3K - 2D
+ *
+ * K 线用真实高低价；分时只有一个价格序列，高低价退化为该点价格本身，
+ * 此时 RSV 会贴近 0/100 两端 —— 所以分时下改用价格在最近 9 点区间内的
+ * 相对位置来算 RSV，仍是同一口径（收盘价在区间中的位置），只是区间由
+ * 「最高最低」换成了「9 点价格区间」。
+ */
+function drawKdj(ctx: CanvasRenderingContext2D, w: number, h: number) {
+  const basis = seriesBasis()
+  if (!basis || basis.closes.length < 3) return
+  const { closes, pos, cap } = basis
+  const n = closes.length
+  const isK = props.mode === 'kline'
+  const highs = isK ? (props.bars ?? []).map((b) => b.high) : closes
+  const lows = isK ? (props.bars ?? []).map((b) => b.low) : closes
+
+  const K: number[] = []
+  const D: number[] = []
+  const J: number[] = []
+  let k = 50
+  let d = 50
+  for (let i = 0; i < n; i += 1) {
+    const from = Math.max(0, i - 8)
+    let hh = -Infinity
+    let ll = Infinity
+    for (let j = from; j <= i; j += 1) {
+      hh = Math.max(hh, highs[j])
+      ll = Math.min(ll, lows[j])
+    }
+    const rsv = hh === ll ? 50 : ((closes[i] - ll) / (hh - ll)) * 100
+    k = (2 / 3) * k + (1 / 3) * rsv
+    d = (2 / 3) * d + (1 / 3) * k
+    K.push(k)
+    D.push(d)
+    J.push(3 * k - 2 * d)
+  }
+
+  // 纵轴固定 0–100，J 可能越界，按实际范围放宽以免折线出画
+  const lo = Math.min(0, ...J)
+  const hi = Math.max(100, ...J)
+  const yOf = (v: number) => h - ((v - lo) / (hi - lo || 1)) * h
+  const slot = w / Math.max(1, cap)
+  const xOf = (i: number) => pos[i] * slot + slot / 2
+
+  // 20/50/80 三条参考线：超卖 / 中轴 / 超买
+  ctx.lineWidth = 1
+  ctx.setLineDash([3, 3])
+  for (const lv of [20, 50, 80]) {
+    ctx.strokeStyle = lv === 50 ? 'rgba(255,255,255,0.16)' : 'rgba(255,255,255,0.09)'
+    ctx.beginPath()
+    ctx.moveTo(0, yOf(lv))
+    ctx.lineTo(w, yOf(lv))
+    ctx.stroke()
+  }
+  ctx.setLineDash([])
+
+  const line = (vals: number[], color: string) => {
+    ctx.beginPath()
+    vals.forEach((v, i) => {
+      const x = xOf(i)
+      const y = yOf(v)
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)
+    })
+    ctx.strokeStyle = color
+    ctx.lineWidth = 1.2
+    ctx.stroke()
+  }
+  line(K, LINE_GOLD)
+  line(D, LINE_BLUE)
+  line(J, 'rgba(200,140,255,0.9)')
 }
 
 /**
  * 副图：量比。
  *
  * 口径：这一根的量 ÷ 本区间每根的平均量，基准线 1.0。
- * 为什么以「本区间均量」为基准：客户端手上只有当前这一屏的序列，没有过去 5 日
- * 每分钟均量；而量比要回答的本来就是「此刻的量相对常态是放大还是萎缩」，
- * 用本区间均量同样能看出放量/缩量，且换周期不会失真。
- * 服务端另下发的 volume_ratio 是用于指标网格展示的全市场口径数值。
+ * 为什么以「本区间均量」为基准：客户端手上只有当前这一屏的序列，没有过去
+ * 5 日每分钟均量；而量比要回答的本来就是「此刻的量相对常态是放大还是萎缩」，
+ * 用本区间均量同样能看出放量/缩量，且换周期不失真。
  */
 function drawRatio(ctx: CanvasRenderingContext2D, w: number, h: number) {
-  const isKline = props.mode === 'kline'
-  const vols = isKline
+  const isK = props.mode === 'kline'
+  const vols = isK
     ? (props.bars ?? []).map((b) => b.volume || 0)
     : (props.minutes ?? []).map((p) => p.volume || 0)
   const n = vols.length
@@ -473,13 +541,12 @@ function drawRatio(ctx: CanvasRenderingContext2D, w: number, h: number) {
   const top = Math.max(...ratios, 1.15)
   const yOf = (r: number) => h - 2 - (r / top) * (h - 4)
 
-  const tl = isKline
+  const tl = isK
     ? { pos: vols.map((_, i) => i), cap: n }
     : buildTimeline(props.minutes ?? [], props.multiDay, props.slots)
   const slot = w / Math.max(1, tl.cap)
   const xOf = (i: number) => tl.pos[i] * slot + slot / 2
 
-  // 基准线 1.0：高于它是放量，低于它是缩量
   ctx.strokeStyle = 'rgba(255,255,255,0.22)'
   ctx.setLineDash([4, 3])
   ctx.lineWidth = 1
@@ -489,22 +556,205 @@ function drawRatio(ctx: CanvasRenderingContext2D, w: number, h: number) {
   ctx.stroke()
   ctx.setLineDash([])
 
-  const last = ratios[n - 1]
   ctx.beginPath()
   ratios.forEach((r, i) => {
     const x = xOf(i)
     const y = yOf(r)
-    if (i === 0) ctx.moveTo(x, y)
-    else ctx.lineTo(x, y)
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)
   })
-  ctx.strokeStyle = last >= 1 ? '#e8b339' : '#7aa9ff'
+  const last = ratios[n - 1]
+  ctx.strokeStyle = last >= 1 ? LINE_GOLD : LINE_BLUE
   ctx.lineWidth = 1.2
   ctx.stroke()
+}
 
+/**
+ * 副图：分时博弈（估算）。
+ *
+ * 真实的分时博弈是按逐笔成交金额分档（大单/中单/小单）统计主动买卖方向，
+ * 需要逐笔数据。服务端只下发分钟级价格与成交量，拿不到主动买卖标记，
+ * 因此这里用可得的量价信息做一个方向估计：
+ *   相邻两点价格上行 → 该点成交量计入「净流入」，下行为「净流出」，
+ *   持平时按买卖各半（净额 0）处理；
+ * 再把净额按累计求和，得到一条从开盘起算的净流入曲线，并叠一条 5 点均值线。
+ * 它只能表达「量价配合的方向与强度」，不等于真实的主力资金流，
+ * 界面上标注「估算」以免被当成精确资金流。
+ */
+function drawGame(ctx: CanvasRenderingContext2D, w: number, h: number) {
+  const isK = props.mode === 'kline'
+  const prices = isK
+    ? (props.bars ?? []).map((b) => b.close)
+    : (props.minutes ?? []).map((p) => p.price)
+  const vols = isK
+    ? (props.bars ?? []).map((b) => b.volume || 0)
+    : (props.minutes ?? []).map((p) => p.volume || 0)
+  const n = prices.length
+  if (n < 2) return
+
+  const net: number[] = [0]
+  for (let i = 1; i < n; i += 1) {
+    const dir = Math.sign(prices[i] - prices[i - 1])
+    net.push(net[i - 1] + dir * (vols[i] || 0))
+  }
+  const ma: number[] = net.map((_, i) => {
+    const from = Math.max(0, i - 4)
+    const slice = net.slice(from, i + 1)
+    return slice.reduce((a, b) => a + b, 0) / slice.length
+  })
+
+  const all = [...net, ...ma]
+  const hi = Math.max(...all, 1)
+  const lo = Math.min(...all, -1)
+  const yOf = (v: number) => h - ((v - lo) / (hi - lo || 1)) * h
+
+  const tl = isK
+    ? { pos: prices.map((_, i) => i), cap: n }
+    : buildTimeline(props.minutes ?? [], props.multiDay, props.slots)
+  const slot = w / Math.max(1, tl.cap)
+  const xOf = (i: number) => tl.pos[i] * slot + slot / 2
+
+  // 零轴：以上为净流入，以下为净流出
+  ctx.strokeStyle = 'rgba(255,255,255,0.2)'
+  ctx.setLineDash([4, 3])
+  ctx.lineWidth = 1
   ctx.beginPath()
-  ctx.arc(xOf(n - 1), yOf(last), 2.2, 0, Math.PI * 2)
-  ctx.fillStyle = last >= 1 ? '#e8b339' : '#7aa9ff'
+  ctx.moveTo(0, yOf(0))
+  ctx.lineTo(w, yOf(0))
+  ctx.stroke()
+  ctx.setLineDash([])
+
+  // 净流入区域填充：以零轴为基线，正负两侧分色
+  ctx.beginPath()
+  ctx.moveTo(xOf(0), yOf(0))
+  net.forEach((v, i) => ctx.lineTo(xOf(i), yOf(v)))
+  ctx.lineTo(xOf(n - 1), yOf(0))
+  ctx.closePath()
+  ctx.fillStyle = 'rgba(232,179,57,0.14)'
   ctx.fill()
+
+  const line = (vals: number[], color: string, width: number) => {
+    ctx.beginPath()
+    vals.forEach((v, i) => {
+      const x = xOf(i)
+      const y = yOf(v)
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)
+    })
+    ctx.strokeStyle = color
+    ctx.lineWidth = width
+    ctx.stroke()
+  }
+  line(net, LINE_GOLD, 1.4)
+  line(ma, 'rgba(200,140,255,0.9)', 1)
+}
+
+/** 把一根 K 线的时间转成刻度文字 */
+function barLabel(t: number | string): string {
+  if (typeof t === 'string') {
+    // "2026-10-31" 或 "2026-10-31 10:30" 都可能出现
+    const m = t.match(/(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}:\d{2}))?/)
+    if (m) return m[4] ?? `${m[2]}/${m[3]}`
+    return t
+  }
+  // 数字按秒或毫秒时间戳处理
+  const ms = t > 1e12 ? t : t * 1000
+  const d = new Date(ms)
+  if (Number.isNaN(d.getTime())) return ''
+  const hh = String(d.getHours()).padStart(2, '0')
+  const mm = String(d.getMinutes()).padStart(2, '0')
+  return `${hh}:${mm}`
+}
+
+/**
+ * 横轴刻度：贴着副图下方渲染，刻度位置与主图/副图共用同一套时间位。
+ *
+ * 分时：标出开盘、上午中段、午间、下午中段、收盘五个位置；
+ * 五日：标每一天的起始日期；
+ * K 线：在可见区间内等距取 4 根，标出它们的时间。
+ */
+function drawAxis(ctx: CanvasRenderingContext2D, w: number, h: number) {
+  ctx.font = '10px -apple-system, "PingFang SC", system-ui, sans-serif'
+  ctx.fillStyle = 'rgba(255,255,255,0.42)'
+  ctx.textBaseline = 'middle'
+  const mid = h / 2 + 0.5
+
+  if (props.mode === 'kline') {
+    const bars = props.bars ?? []
+    const n = bars.length
+    if (!n) return
+    const want = Math.min(4, n)
+    for (let k = 0; k < want; k += 1) {
+      const i = Math.round((k / Math.max(1, want - 1)) * (n - 1))
+      const slot = w / n
+      const x = slot * (i + 0.5)
+      const first = k === 0
+      const lastOne = k === want - 1
+      ctx.textAlign = first ? 'left' : lastOne ? 'right' : 'center'
+      ctx.fillText(barLabel(bars[i].time), first ? 0 : lastOne ? w : x, mid)
+    }
+    return
+  }
+
+  const pts = props.minutes ?? []
+  if (!pts.length) return
+  const tl = buildTimeline(pts, props.multiDay, props.slots)
+  const slot = w / Math.max(1, tl.cap)
+
+  if (props.multiDay) {
+    // 五日：每天标一次日期，只在日分隔线处写
+    const marks = tl.dayStarts
+    marks.forEach((d, k) => {
+      const x = d.pos * slot
+      ctx.textAlign = k === 0 ? 'left' : 'center'
+      const label = d.day ? d.day.slice(5) : ''
+      if (label) ctx.fillText(label, k === 0 ? 0 : x + 2, mid)
+    })
+    return
+  }
+
+  // 单日：五个固定时间位。11:30 与 13:00 是同一位置（午休不占分钟位），
+  // 因此合并写成「11:30/13:00」。
+  const ticks: Array<{ pos: number; label: string }> = [
+    { pos: 0, label: '9:30' },
+    { pos: 60, label: '10:30' },
+    { pos: 120, label: '11:30/13:00' },
+    { pos: 180, label: '14:00' },
+    { pos: MINUTES_PER_DAY - 1, label: '15:00' },
+  ]
+  ticks.forEach((t, k) => {
+    const x = t.pos * slot + slot / 2
+    if (k === 0) {
+      ctx.textAlign = 'left'
+      ctx.fillText(t.label, 0, mid)
+    } else if (k === ticks.length - 1) {
+      ctx.textAlign = 'right'
+      ctx.fillText(t.label, w, mid)
+    } else {
+      ctx.textAlign = 'center'
+      ctx.fillText(t.label, x, mid)
+    }
+  })
+}
+
+function drawSub(ctx: CanvasRenderingContext2D, w: number, h: number) {
+  switch (props.sub) {
+    case 'volume':
+      drawVolume(ctx, w, h)
+      break
+    case 'kdj':
+      drawKdj(ctx, w, h)
+      break
+    case 'ratio':
+      drawRatio(ctx, w, h)
+      break
+    case 'game':
+      drawGame(ctx, w, h)
+      break
+    case 'macd':
+      drawMacd(ctx, w, h)
+      break
+    default:
+      break
+  }
 }
 
 function render() {
@@ -521,8 +771,14 @@ function render() {
   const H = rect.height
   ctx.clearRect(0, 0, W, H)
 
-  // part='main'/'sub' 是把主图与副图拆成两块独立 canvas 的用法：
-  // 此时各自占满自己的高度，中间由模板插入副图选项条。
+  // 横轴：不画网格，只画刻度文字
+  if (props.part === 'axis') {
+    drawAxis(ctx, W, H)
+    return
+  }
+
+  // 主图与副图拆成两块独立 canvas 时，各自占满自己的高度，
+  // 中间由模板插入「副图名称按钮」。
   if (props.part === 'main') {
     drawGrid(ctx, W, H)
     if (props.mode === 'kline') drawKline(ctx, W, H)
@@ -530,18 +786,16 @@ function render() {
     return
   }
   if (props.part === 'sub') {
-    if (props.sub === 'volume') drawVolume(ctx, W, H)
-    else if (props.sub === 'ratio') drawRatio(ctx, W, H)
-    else drawMacd(ctx, W, H)
+    drawSub(ctx, W, H)
     return
   }
 
+  // all：同一块画布上下分区
   const showSub = props.sub !== 'none'
   const gap = showSub ? 5 : 0
   const subH = showSub ? Math.round((H - gap) * 0.3) : 0
   const mainH = H - subH - gap
 
-  // 主图
   ctx.save()
   ctx.beginPath()
   ctx.rect(0, 0, W, mainH)
@@ -553,7 +807,6 @@ function render() {
 
   if (!showSub) return
 
-  // 分隔线
   ctx.strokeStyle = 'rgba(255,255,255,0.12)'
   ctx.lineWidth = 1
   ctx.beginPath()
@@ -561,16 +814,13 @@ function render() {
   ctx.lineTo(W, mainH + gap / 2)
   ctx.stroke()
 
-  // 副图
   const subTop = mainH + gap
   ctx.save()
   ctx.translate(0, subTop)
   ctx.beginPath()
   ctx.rect(0, 0, W, subH)
   ctx.clip()
-  if (props.sub === 'volume') drawVolume(ctx, W, subH)
-  else if (props.sub === 'ratio') drawRatio(ctx, W, subH)
-  else drawMacd(ctx, W, subH)
+  drawSub(ctx, W, subH)
   ctx.restore()
 }
 
@@ -589,7 +839,7 @@ onBeforeUnmount(() => {
 })
 
 watch(
-  () => [props.minutes, props.bars, props.mode, props.sub, props.part, props.multiDay, props.slots],
+  () => [props.minutes, props.bars, props.mode, props.sub, props.part, props.multiDay, props.slots, props.height],
   () => render(),
   { deep: true },
 )
