@@ -21,6 +21,8 @@ interface Point {
   volume?: number
   /** 该点所属时段，用于给竞价/盘前/盘后区间打底色 */
   segment?: Segment
+  /** 该点所属交易日（仅五日视图下发），画日分隔线与当日基准线要用 */
+  day?: string
 }
 interface Bar {
   time: number | string
