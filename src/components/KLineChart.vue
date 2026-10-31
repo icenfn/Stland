@@ -226,22 +226,32 @@ function setSub(id: SubKind) {
           </button>
           <em v-if="subEstimated" class="kc-note">估算</em>
           <span v-if="readouts.length" class="kc-readout tabular">
-            <em v-for="r in readouts" :key="r.label" :class="dirClass(r.dir)">
+            <em
+              v-for="r in readouts"
+              :key="r.label"
+              :class="r.tone ? '' : dirClass(r.dir)"
+              :style="r.tone ? { color: r.tone } : undefined"
+            >
               {{ r.label }}:{{ r.value }}<i>{{ arrow(r.dir) }}</i>
             </em>
           </span>
         </div>
 
-        <MiniChart
-          part="sub"
-          :mode="mode"
-          :sub="sub"
-          :minutes="minutes"
-          :bars="bars"
-          :prev-close="prevClose"
-          :multi-day="fiveDay"
-          :height="subHeight"
-        />
+        <!-- 点击副图本体即可切换指标：副图是「看图时视线落点」，
+             比回到小小的标题按钮更顺手。 -->
+        <div class="kc-subwrap" @click="drawerOpen = true">
+          <MiniChart
+            part="sub"
+            :mode="mode"
+            :sub="sub"
+            :minutes="minutes"
+            :bars="bars"
+            :prev-close="prevClose"
+            :multi-day="fiveDay"
+            :height="subHeight"
+          />
+          <span class="kc-subswap">切换</span>
+        </div>
 
         <!-- 时间轴：与主图副图共用时间位，按当前周期取刻度格式 -->
         <div class="kc-axis">
@@ -429,6 +439,21 @@ function setSub(id: SubKind) {
 }
 .kc-readout .flat {
   color: var(--c-text-3);
+}
+
+/* 副图可点击区：右下角一个淡淡的「切换」提示，说明这里可以点 */
+.kc-subwrap {
+  position: relative;
+  cursor: pointer;
+}
+.kc-subswap {
+  position: absolute;
+  right: 2px;
+  top: 2px;
+  font-size: 9px;
+  color: var(--c-text-3);
+  opacity: 0.6;
+  pointer-events: none;
 }
 
 /* ④ 时间轴 */

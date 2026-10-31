@@ -46,23 +46,39 @@ const editName = ref('')
 const activeGroup = computed(() => groups.value.find((g) => g.id === activeId.value) ?? null)
 
 /* ---------------- 分组拖拽排序 ---------------- */
+/**
+ * 拖拽排序的手感要点
+ * ----------------
+ * 上一版只有「换位 + 换个底色」：手指移动时那一行不动，看着像点击而不是拖动。
+ * 这里改成三段式：
+ *   1. 按下时立即抬手柄提升（阴影 + 轻微放大），给出「抓住了」的反馈；
+ *   2. 移动时整行跟手位移（translateY），越过的行数决定是否需要换位；
+ *   3. 换位后把基准点挪到当前手指位置，保持连续跟手，不会「跳一下」。
+ * 松手时统一回位，再一次性提交顺序。
+ */
 /** 正在被拖动行的下标，-1 表示没有在拖 */
 const dragIdx = ref(-1)
-/** 拖动中的纵向位移，只用于给被拖动行一点跟手反馈 */
+/** 拖动中的纵向位移（像素），驱动整行跟手 */
 const dragY = ref(0)
 /** 拖动开始前的顺序快照，提交失败时回滚 */
 let orderSnapshot: WatchGroup[] = []
 let dragStartY = 0
 /** 拖拽把手的指针 id，用于在指针移动时判断是否属于本次拖动 */
 let dragPointer: number | null = null
+/** 一行的实际高度，起手时按 DOM 量一次，避免写死 */
+let rowHeight = 46
 
 function startDrag(e: PointerEvent, index: number) {
   if (busy.value) return
+  const row = (e.currentTarget as HTMLElement).closest('.m-row') as HTMLElement | null
+  rowHeight = row?.offsetHeight || 46
+
   dragIdx.value = index
   dragY.value = 0
   dragStartY = e.clientY
   dragPointer = e.pointerId
   orderSnapshot = groups.value.slice()
+  // 捕获设在把手自身（绑定了 move/up 的元素），否则事件会被重定向而丢回调
   ;(e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId)
   e.preventDefault()
 }
@@ -70,24 +86,26 @@ function startDrag(e: PointerEvent, index: number) {
 function moveDrag(e: PointerEvent) {
   if (dragIdx.value < 0 || e.pointerId !== dragPointer) return
   dragY.value = e.clientY - dragStartY
-  // 用行高换算出「越过了几行」，就地交换顺序，视觉上就是别的行让位
-  const rowH = 46
-  const shift = Math.round(dragY.value / rowH)
-  const from = dragIdx.value
-  const to = Math.max(0, Math.min(groups.value.length - 1, from + shift))
-  if (to !== from) {
-    const list = groups.value.slice()
-    const [moved] = list.splice(from, 1)
-    list.splice(to, 0, moved)
-    groups.value = list
-    dragIdx.value = to
-    // 保持「手指相对位置」连续：换位后重置基准点
-    dragStartY = e.clientY
-    dragY.value = 0
+
+  // 越过半行就换位：比「整行」更灵敏，长列表里不必拖满一格才动
+  const step = Math.trunc(dragY.value / (rowHeight / 2))
+  if (step !== 0) {
+    const from = dragIdx.value
+    const to = Math.max(0, Math.min(groups.value.length - 1, from + step))
+    if (to !== from) {
+      const list = groups.value.slice()
+      const [moved] = list.splice(from, 1)
+      list.splice(to, 0, moved)
+      groups.value = list
+      dragIdx.value = to
+      // 换位后把基准点前移到当前手指，剩余位移归零，跟手不会跳
+      dragStartY = e.clientY
+      dragY.value = 0
+    }
   }
 }
 
-async function endDrag(e?: PointerEvent) {
+async function endDrag() {
   if (dragIdx.value < 0) return
   dragIdx.value = -1
   dragY.value = 0
@@ -107,6 +125,7 @@ async function endDrag(e?: PointerEvent) {
     busy.value = false
   }
 }
+
 /** 至少要留一个分组，最后一个不允许删 */
 const canDelete = computed(() => groups.value.length > 1)
 
@@ -264,9 +283,9 @@ onMounted(refresh)
       </button>
       <!-- 分组管理：用铅笔表示「编辑」，比「＋」更贴近它的真实作用
            （点开是管理已有分组，包括重命名与删除，不只是新增） -->
-      <button class="gchip add" aria-label="分组管理" @click="openManage">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
-          stroke-linecap="round" stroke-linejoin="round">
+      <button class="gchip icon" aria-label="分组管理" @click="openManage">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor"
+          stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
           <path d="M4 20h4L19.5 8.5a2.12 2.12 0 0 0-3-3L5 17v3z" />
           <path d="M14.5 6.5l3 3" />
         </svg>
@@ -322,6 +341,7 @@ onMounted(refresh)
           :key="g.id"
           class="m-row"
           :class="{ dragging: dragIdx === gi }"
+          :style="dragIdx === gi ? { '--drag-y': `${dragY}px` } : undefined"
         >
           <!-- 拖拽把手：单独一块区域起手，避免和行内的「重命名/删除」抢事件 -->
           <button
@@ -592,9 +612,30 @@ onMounted(refresh)
 }
 .m-row.dragging {
   position: relative;
-  z-index: 1;
-  background: rgba(232, 56, 61, 0.1);
+  z-index: 2;
+  background: rgba(232, 56, 61, 0.12);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.45);
+  border-radius: 8px;
+  transform: translate3d(0, var(--drag-y, 0px), 0) scale(1.02);
+  transition: none;
+  will-change: transform;
 }
+/* 图标型分组按钮（当前只有「分组管理」）：固定宽高，保证 SVG 有落位空间 */
+.gchip.icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: 999px;
+  color: var(--c-text-2);
+}
+.gchip.icon:hover {
+  color: var(--c-text);
+}
+
 .m-grip {
   flex: 0 0 auto;
   display: inline-flex;

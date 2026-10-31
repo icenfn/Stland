@@ -309,6 +309,49 @@ function drawMinute(ctx: CanvasRenderingContext2D, w: number, h: number) {
 }
 
 /** 主图：K 线（一根就是一根，等距排布，不涉及「一天 240 位」） */
+/**
+ * 主图左上角标最高价、左下角标最低价。
+ *
+ * 为什么放在画布里而不是模板里：主图是一整块 canvas，纵向价格刻度由它自己算，
+ * 若用 DOM 叠加就得再算一遍坐标；两套算法一旦不一致，就会出现「标签说最高，
+ * 图上却不是最高那根」。这里直接用同一份 hi/lo 画字，永远对得上。
+ *
+ * 先描一圈深色描边再填字，避免落在密集的 K 线上糊成一片。
+ */
+function drawHiLo(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  hi: number,
+  lo: number,
+  digits = 2,
+) {
+  const pad = 3
+  const font = '10px -apple-system, "PingFang SC", system-ui, sans-serif'
+  const stroke = 'rgba(11,13,18,0.85)'
+  const fill = 'rgba(255,255,255,0.72)'
+
+  ctx.font = font
+  ctx.textAlign = 'left'
+  ctx.lineWidth = 3
+  ctx.strokeStyle = stroke
+  ctx.fillStyle = fill
+
+  // 最高：左上角
+  const hiText = `最高 ${hi.toFixed(digits)}`
+  ctx.textBaseline = 'top'
+  ctx.strokeText(hiText, pad, pad)
+  ctx.fillText(hiText, pad, pad)
+
+  // 最低：左下角
+  const loText = `最低 ${lo.toFixed(digits)}`
+  ctx.textBaseline = 'bottom'
+  ctx.strokeText(loText, pad, h - pad)
+  ctx.fillText(loText, pad, h - pad)
+
+  void w
+}
+
 function drawKline(ctx: CanvasRenderingContext2D, w: number, h: number) {
   const bars = props.bars ?? []
   if (!bars.length) return
@@ -833,8 +876,26 @@ function render() {
   // 中间由模板插入「副图名称按钮」。
   if (props.part === 'main') {
     drawGrid(ctx, W, H)
-    if (props.mode === 'kline') drawKline(ctx, W, H)
-    else drawMinute(ctx, W, H)
+    if (props.mode === 'kline') {
+      const bars = props.bars ?? []
+      drawKline(ctx, W, H)
+      if (bars.length) {
+        drawHiLo(
+          ctx,
+          W,
+          H,
+          Math.max(...bars.map((b) => b.high)),
+          Math.min(...bars.map((b) => b.low)),
+        )
+      }
+    } else {
+      const pts = props.minutes ?? []
+      drawMinute(ctx, W, H)
+      if (pts.length) {
+        const prices = pts.map((p) => p.price)
+        drawHiLo(ctx, W, H, Math.max(...prices), Math.min(...prices))
+      }
+    }
     return
   }
   if (props.part === 'sub') {

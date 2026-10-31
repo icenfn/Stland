@@ -112,6 +112,13 @@ export function netFlowOf(prices: number[], vols: number[]): { net: number[]; ma
   return { net, ma }
 }
 
+/** 副图线条配色：读数文字要跟各自那条线同色，否则 K/D/J 三行同色看不出对应关系 */
+export const LINE_COLORS = {
+  gold: '#e8b339',
+  blue: '#7aa9ff',
+  purple: '#c88cff',
+} as const
+
 /** 一段序列的「当前值 / 方向」，副图读数用 */
 export interface Readout {
   /** 指标名，如 K、DIF */
@@ -120,6 +127,11 @@ export interface Readout {
   value: string
   /** 与上一点相比的方向：1 上行 / -1 下行 / 0 持平 */
   dir: 1 | -1 | 0
+  /**
+   * 该指标在副图里画的线色。给了就按线色上色，
+   * 没给（如成交量、量比）沿用涨跌方向着色。
+   */
+  tone?: string
 }
 
 function compact(v: number): string {
@@ -136,12 +148,13 @@ function dirOf(series: number[]): 1 | -1 | 0 {
   return d > 0 ? 1 : d < 0 ? -1 : 0
 }
 
-function tailReadout(label: string, series: number[], digits: number): Readout {
+function tailReadout(label: string, series: number[], digits: number, tone?: string): Readout {
   const n = series.length
   return {
     label,
     value: n ? series[n - 1].toFixed(digits) : '—',
     dir: dirOf(series),
+    tone,
   }
 }
 
@@ -153,15 +166,21 @@ export function subReadout(kind: SubKind, input: SeriesInput): Readout[] {
   switch (kind) {
     case 'kdj': {
       const { k, d, j } = kdjOf(input)
-      return [tailReadout('K', k, 1), tailReadout('D', d, 1), tailReadout('J', j, 1)]
+      // 与 drawKdj 里的线色一一对应：K 金、D 蓝、J 紫
+      return [
+        tailReadout('K', k, 1, LINE_COLORS.gold),
+        tailReadout('D', d, 1, LINE_COLORS.blue),
+        tailReadout('J', j, 1, LINE_COLORS.purple),
+      ]
     }
     case 'macd': {
       const { dif, dea } = macdOf(input.closes)
-      return [tailReadout('DIF', dif, 3), tailReadout('DEA', dea, 3)]
+      // 与 drawMacd 里的线色一一对应：DIF 金、DEA 蓝
+      return [tailReadout('DIF', dif, 3, LINE_COLORS.gold), tailReadout('DEA', dea, 3, LINE_COLORS.blue)]
     }
     case 'ratio': {
       const r = ratioOf(input.vols ?? [])
-      return [tailReadout('量比', r, 2)]
+      return [tailReadout('量比', r, 2, LINE_COLORS.gold)]
     }
     case 'game': {
       const { net } = netFlowOf(input.closes, input.vols ?? [])
@@ -171,6 +190,7 @@ export function subReadout(kind: SubKind, input: SeriesInput): Readout[] {
           label: '净流',
           value: n ? compact(net[n - 1]) : '—',
           dir: dirOf(net),
+          tone: LINE_COLORS.gold,
         },
       ]
     }

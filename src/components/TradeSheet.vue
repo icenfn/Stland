@@ -237,9 +237,6 @@ watch([price, quantity, orderType, side], () => {
   <!-- 抽屉外壳交给 BaseSheet：圆角、遮罩、返回键关闭、下滑关闭只实现一次。
        方向由入口决定，head 槽位只做「当前在做什么」的提示，不再提供切换。 -->
   <BaseSheet :show="show" max-height="86vh" @update:show="close">
-    <template #head>
-      <span class="side-tag" :class="side">{{ side === 'buy' ? '买入' : '卖出' }}</span>
-    </template>
 
         <div class="seg-row">
           <button class="seg-btn" :class="{ on: orderType === 'limit' }" @click="orderType = 'limit'">
@@ -328,21 +325,6 @@ watch([price, quantity, orderType, side], () => {
 </template>
 
 <style scoped>
-.side-tag {
-  font-size: 12px;
-  font-weight: 700;
-  padding: 2px 8px;
-  border-radius: 6px;
-  line-height: 18px;
-}
-.side-tag.buy {
-  color: #ff8b8d;
-  background: rgba(232, 56, 61, 0.14);
-}
-.side-tag.sell {
-  color: #69e2a5;
-  background: rgba(18, 183, 106, 0.14);
-}
 
 .seg-row {
   display: flex;

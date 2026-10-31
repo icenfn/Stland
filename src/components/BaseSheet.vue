@@ -145,7 +145,11 @@ function onPointerDown(e: PointerEvent) {
   startY = e.clientY
   startT = Date.now()
   pointerId = e.pointerId
-  el.setPointerCapture?.(e.pointerId)
+  // 捕获必须设在「绑定了 pointermove/pointerup 的那个元素」上。
+  // 之前捕获的是外层 .bsheet，事件被重定向到外层，手柄再也收不到移动与抬起，
+  // 表现为「拖不动、也不回弹」。
+  const target = e.currentTarget as HTMLElement | null
+  target?.setPointerCapture?.(e.pointerId)
 }
 
 function onPointerMove(e: PointerEvent) {
