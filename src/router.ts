@@ -67,12 +67,9 @@ export const routes: RouteRecordRaw[] = [
     component: () => import('./views/IndexDetailView.vue'),
     meta: { title: '指数详情' },
   },
-  {
-    path: '/orders',
-    name: 'orders',
-    component: () => import('./views/OrdersView.vue'),
-    meta: { title: '委托与成交' },
-  },
+  // 「委托与成交」已并入交易页的 tab（持仓 / 委托 / 成交），
+  // 独立页面与其入口一并删除；旧地址重定向到交易页，外部链接不会 404。
+  { path: '/orders', redirect: '/trade' },
   {
     path: '/risk',
     name: 'risk',

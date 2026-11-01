@@ -1,5 +1,7 @@
 /** 格式化工具：A 股显示习惯（红涨绿跌、万/亿单位、成交量手数） */
 
+import dayjs from 'dayjs'
+
 export function fmtPrice(value: number, digits = 2): string {
   if (!Number.isFinite(value)) return '--'
   return value.toFixed(digits)
@@ -64,7 +66,10 @@ export function trendClass(value: number): string {
  * 服务端全部时间戳来自 Python 的 time.time()，即「秒」，带小数；
  * 而部分行情快照会带毫秒。此前直接把秒当毫秒解析，
  * 于是 2026 年的委托时间被显示成 1970 年 —— 这就是「时间显示错误」的根因。
- * 这里按数量级判定：小于 1e11 的一律视为秒，其余视为毫秒。
+ *
+ * 归一化这一步保持不变（它处理的是「单位」而不是「格式」），
+ * 之后的格式化交给 dayjs：项目里原本是手写 pad + 拼串，各处各写一份，
+ * 加减时区/星期/相对时间时就得逐处改。引入 dayjs 后只在这里留一个入口。
  */
 export function toMillis(ts: number): number {
   if (!Number.isFinite(ts) || ts <= 0) return 0
@@ -72,20 +77,41 @@ export function toMillis(ts: number): number {
   return ts < 1e11 ? Math.round(ts * 1000) : Math.round(ts)
 }
 
-export function fmtTime(ts: number): string {
+/** 时间戳 → dayjs 对象；无效值返回 null，避免各处重复判空 */
+function toDay(ts: number) {
   const ms = toMillis(ts)
-  if (!ms) return '--'
-  const d = new Date(ms)
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+  return ms ? dayjs(ms) : null
+}
+
+export function fmtTime(ts: number): string {
+  return toDay(ts)?.format('HH:mm:ss') ?? '--'
 }
 
 export function fmtDateTime(ts: number): string {
-  const ms = toMillis(ts)
-  if (!ms) return '--'
-  const d = new Date(ms)
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${d.getMonth() + 1}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+  return toDay(ts)?.format('MM-DD HH:mm') ?? '--'
+}
+
+/** 带年份的完整时间：委托详情、账单核对时用 */
+export function fmtFullTime(ts: number): string {
+  return toDay(ts)?.format('YYYY-MM-DD HH:mm:ss') ?? '--'
+}
+
+/** 只到分钟：成交流水里秒对用户没有意义，能省一列宽度 */
+export function fmtClock(ts: number): string {
+  return toDay(ts)?.format('HH:mm') ?? '--'
+}
+
+/** 相对时间：刚刚 / 3 分钟前 / 昨天 14:20，用于「今日委托」这类新鲜度敏感的位置 */
+export function fmtRelative(ts: number): string {
+  const d = toDay(ts)
+  if (!d) return '--'
+  const diff = Date.now() - d.valueOf()
+  if (diff < 45_000) return '刚刚'
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`
+  const y = dayjs().subtract(1, 'day')
+  if (d.isSame(y, 'day')) return `昨天 ${d.format('HH:mm')}`
+  return d.format('MM-DD HH:mm')
 }
 
 /** 股票代码 → 展示用板块标签 */
