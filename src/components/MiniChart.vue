@@ -154,6 +154,17 @@ const props = withDefaults(
 const canvasRef = ref<HTMLCanvasElement | null>(null)
 let ro: ResizeObserver | null = null
 
+/**
+ * 十字光标位置（仅主图）。
+ *
+ * x/y 是相对画布的 CSS 像素；idx 是吸附到的数据下标 —— 竖线必须落在某根 K 线
+ * （或某个分钟点）的正中，否则光标会停在两根柱子之间，读出来的时间没有对应
+ * 的行情。横线不吸附，自由跟随手指，用来读任意价位。
+ */
+const hover = ref<{ y: number; idx: number } | null>(null)
+/** 手指是否按下：移动端只有按住才显示光标，否则一碰就留在图上 */
+let pressing = false
+
 const UP = '#ff4d4f'
 const DOWN = '#12b76a'
 const LINE_GOLD = '#e8b339'
@@ -331,25 +342,26 @@ function drawHiLo(
 ) {
   const pad = 3
   const font = '10px -apple-system, "PingFang SC", system-ui, sans-serif'
-  const stroke = 'rgba(11,13,18,0.85)'
-  const fill = 'rgba(255,255,255,0.72)'
+  // 先描一圈深色再填字：数字会压在密集的 K 线上，不描边基本看不清。
+  const stroke = 'rgba(11,13,18,0.9)'
 
   ctx.font = font
   ctx.textAlign = 'left'
   ctx.lineWidth = 3
   ctx.strokeStyle = stroke
-  ctx.fillStyle = fill
 
-  // 最高：左上角
-  const hiText = `最高 ${hi.toFixed(digits)}`
+  // 最高：左上角，红
+  const hiText = hi.toFixed(digits)
   ctx.textBaseline = 'top'
   ctx.strokeText(hiText, pad, pad)
+  ctx.fillStyle = UP
   ctx.fillText(hiText, pad, pad)
 
-  // 最低：左下角
-  const loText = `最低 ${lo.toFixed(digits)}`
+  // 最低：左下角，绿
+  const loText = lo.toFixed(digits)
   ctx.textBaseline = 'bottom'
   ctx.strokeText(loText, pad, h - pad)
+  ctx.fillStyle = DOWN
   ctx.fillText(loText, pad, h - pad)
 
   void w
@@ -745,6 +757,147 @@ function barLabel(t: number | string, period: string): string {
 }
 
 /**
+ * 主图的纵轴口径（最高/最低），十字光标与主图共用它。
+ *
+ * 必须与 drawMinute / drawKline 里的算法完全一致，否则光标读到的价格
+ * 会和图上那条曲线对不上 —— 这里是唯一一处把范围「提取成可复用函数」的地方，
+ * 两个绘制函数各算一次已经是历史包袱，新代码不要再各写一份。
+ */
+function mainRange(): { hi: number; lo: number } | null {
+  if (props.mode === 'kline') {
+    const bars = props.bars ?? []
+    if (!bars.length) return null
+    return {
+      hi: Math.max(...bars.map((b) => b.high)),
+      lo: Math.min(...bars.map((b) => b.low)),
+    }
+  }
+  const pts = props.minutes ?? []
+  if (!pts.length) return null
+  const base = props.prevClose || pts[0].price
+  const maxDev = Math.max(...pts.map((p) => Math.abs(p.price - base)), base * 0.005)
+  return { hi: base + maxDev, lo: base - maxDev }
+}
+
+/** 光标所在数据点的时间文本：K 线带日期，分时只到分钟 */
+function crosshairTime(): string {
+  const hv = hover.value
+  if (!hv) return ''
+  if (props.mode === 'kline') {
+    const bar = (props.bars ?? [])[hv.idx]
+    if (!bar) return ''
+    const p = parseBarTime(bar.time)
+    if (!p) return typeof bar.time === 'string' ? bar.time : ''
+    const period = props.period || 'day'
+    if (INTRADAY_PERIODS.has(period)) {
+      return `${p.y}/${pad2(p.mo)}/${pad2(p.d)} ${pad2(p.hh)}:${pad2(p.mi)}`
+    }
+    return `${p.y}/${pad2(p.mo)}/${pad2(p.d)}`
+  }
+  const pt = (props.minutes ?? [])[hv.idx]
+  if (!pt) return ''
+  const d = new Date(pt.t)
+  return `${d.getFullYear()}/${pad2(d.getMonth() + 1)}/${pad2(d.getDate())} ${pad2(
+    d.getHours(),
+  )}:${pad2(d.getMinutes())}`
+}
+
+/** 光标处的行情读数，对齐东方财富顶部那一行 OHLC */
+function crosshairInfo(): string[] {
+  const hv = hover.value
+  if (!hv) return []
+  if (props.mode === 'kline') {
+    const b = (props.bars ?? [])[hv.idx]
+    if (!b) return []
+    return [`开 ${b.open.toFixed(2)}`, `高 ${b.high.toFixed(2)}`, `低 ${b.low.toFixed(2)}`, `收 ${b.close.toFixed(2)}`]
+  }
+  const pt = (props.minutes ?? [])[hv.idx]
+  if (!pt) return []
+  const out = [`价 ${pt.price.toFixed(2)}`]
+  if (typeof pt.avg === 'number' && pt.avg > 0) out.push(`均 ${pt.avg.toFixed(2)}`)
+  if (typeof pt.volume === 'number') out.push(`量 ${Math.round(pt.volume)}`)
+  return out
+}
+
+/**
+ * 十字光标：竖线吸附到最近的数据点，横线跟随手指。
+ *
+ * 右侧价格标签与底部时间标签做成实心底色小牌（和东方财富一致），
+ * 因为纯文字压在网格与 K 线上会被吃掉；标签颜色用中性金，不参与红绿语义，
+ * 避免「光标价格是红的」被误读成涨。
+ */
+function drawCrosshair(ctx: CanvasRenderingContext2D, W: number, H: number) {
+  const hv = hover.value
+  if (!hv) return
+  const rng = mainRange()
+  if (!rng) return
+  const span = rng.hi - rng.lo || 1
+  const y = Math.min(Math.max(0, hv.y), H)
+
+  // 竖线吸附到数据点中心
+  let xs = 0
+  if (props.mode === 'kline') {
+    const n = (props.bars ?? []).length
+    xs = (W / Math.max(1, n)) * (hv.idx + 0.5)
+  } else {
+    const pts = props.minutes ?? []
+    const tl = buildTimeline(pts, props.multiDay, props.slots)
+    const slot = W / Math.max(1, tl.cap)
+    xs = tl.pos[hv.idx] * slot + slot / 2
+  }
+
+  ctx.save()
+  ctx.strokeStyle = 'rgba(226,232,240,0.55)'
+  ctx.lineWidth = 1
+  ctx.setLineDash([3, 3])
+  ctx.beginPath()
+  ctx.moveTo(xs, 0)
+  ctx.lineTo(xs, H)
+  ctx.moveTo(0, y)
+  ctx.lineTo(W, y)
+  ctx.stroke()
+  ctx.setLineDash([])
+
+  const font = '10px -apple-system, "PingFang SC", system-ui, sans-serif'
+  ctx.font = font
+  ctx.textBaseline = 'middle'
+  ctx.textAlign = 'center'
+
+  // 右侧价格牌
+  const price = rng.lo + ((H - y) / H) * span
+  const ptxt = price.toFixed(2)
+  const pw = ctx.measureText(ptxt).width + 8
+  const ph = 14
+  const py = Math.min(Math.max(y - ph / 2, 0), H - ph)
+  ctx.fillStyle = 'rgba(232,179,57,0.94)'
+  ctx.fillRect(W - pw, py, pw, ph)
+  ctx.fillStyle = '#12151c'
+  ctx.fillText(ptxt, W - pw / 2, py + ph / 2 + 0.5)
+
+  // 底部时间牌
+  const ttxt = crosshairTime()
+  if (ttxt) {
+    const tw = ctx.measureText(ttxt).width + 10
+    const th = 14
+    const tx = Math.min(Math.max(xs - tw / 2, 0), W - tw)
+    ctx.fillStyle = 'rgba(232,179,57,0.94)'
+    ctx.fillRect(tx, H - th, tw, th)
+    ctx.fillStyle = '#12151c'
+    ctx.fillText(ttxt, tx + tw / 2, H - th / 2 + 0.5)
+  }
+
+  // 顶部读数：右对齐，避开左上角的最低价位标签
+  const info = crosshairInfo()
+  if (info.length && W > 200) {
+    ctx.textAlign = 'right'
+    ctx.fillStyle = 'rgba(255,255,255,0.78)'
+    ctx.fillText(info.join('  '), W - 4, 10)
+  }
+
+  ctx.restore()
+}
+
+/**
  * 横轴刻度：贴着副图下方渲染，刻度位置与主图/副图共用同一套时间位。
  *
  * 刻度密度按「可用宽度」反推，而不是写死 4~5 个：
@@ -899,6 +1052,8 @@ function render() {
         drawHiLo(ctx, W, H, Math.max(...prices), Math.min(...prices))
       }
     }
+    // 光标画在最后：它要压在 K 线之上
+    drawCrosshair(ctx, W, H)
     return
   }
   if (props.part === 'sub') {
@@ -939,6 +1094,66 @@ function render() {
   ctx.restore()
 }
 
+/**
+ * 把指针位置换算成「吸附后的数据下标」。
+ *
+ * K 线：按等宽槽位取整；分时：在时间位上找中心最近的已有点。
+ * 五代（multiDay）时分时点被拉到跨日位置，必须用 buildTimeline 的真实位置
+ * 去找，否则光标会对到隔天的点上。
+ */
+function locate(ev: PointerEvent) {
+  const el = canvasRef.value
+  if (!el) return
+  const rect = el.getBoundingClientRect()
+  if (rect.width < 1) return
+  const x = Math.min(Math.max(0, ev.clientX - rect.left), rect.width)
+  const y = Math.min(Math.max(0, ev.clientY - rect.top), rect.height)
+
+  let idx = 0
+  if (props.mode === 'kline') {
+    const n = (props.bars ?? []).length
+    if (!n) return
+    idx = Math.min(n - 1, Math.max(0, Math.floor((x / rect.width) * n)))
+  } else {
+    const pts = props.minutes ?? []
+    if (!pts.length) return
+    const tl = buildTimeline(pts, props.multiDay, props.slots)
+    const slot = rect.width / Math.max(1, tl.cap)
+    let best = 0
+    let bestD = Infinity
+    for (let i = 0; i < pts.length; i += 1) {
+      const d = Math.abs(tl.pos[i] * slot + slot / 2 - x)
+      if (d < bestD) {
+        bestD = d
+        best = i
+      }
+    }
+    idx = best
+  }
+  hover.value = { y, idx }
+  render()
+}
+
+function onDown(ev: PointerEvent) {
+  if (props.part !== 'main') return
+  pressing = true
+  ;(ev.currentTarget as HTMLElement).setPointerCapture?.(ev.pointerId)
+  locate(ev)
+}
+
+function onMove(ev: PointerEvent) {
+  if (props.part !== 'main') return
+  // 桌面端鼠标悬停即显示；触屏必须按住，否则抬手后光标会黏在图上
+  if (ev.pointerType === 'touch' && !pressing) return
+  locate(ev)
+}
+
+function onUp() {
+  pressing = false
+  hover.value = null
+  render()
+}
+
 onMounted(() => {
   render()
   if (canvasRef.value && 'ResizeObserver' in window) {
@@ -961,7 +1176,17 @@ watch(
 </script>
 
 <template>
-  <canvas ref="canvasRef" class="mini-chart" :style="{ height: height + 'px' }" />
+  <!-- 只有主图接收指针事件：副图与横轴各自独立，光标只属于主图 -->
+  <canvas
+    ref="canvasRef"
+    class="mini-chart"
+    :style="{ height: height + 'px' }"
+    @pointerdown="onDown"
+    @pointermove="onMove"
+    @pointerup="onUp"
+    @pointercancel="onUp"
+    @pointerleave="onUp"
+  />
 </template>
 
 <style scoped>

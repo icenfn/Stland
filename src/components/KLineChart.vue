@@ -32,17 +32,20 @@
  * 数值与图形由同一套指标实现产出（见 utils/indicators），不会出现「标注 81、
  * 曲线却在 60」这种口径分裂。
  *
- * 为什么副图点击直接轮切换
- * ----------------------
- * 副图只有五个指标，而且看盘时的动作是「看→换一个看看→再换回来」。
- * 走抽屉要先点开、再选、再关闭，三步才能换一次；改成点击副图任意位置
- * 直接轮到下一个指标，同一个动作连点两下就能来回对比。
- * 标题行保留指标名与「切换」提示，用户仍能看出点一下会发生什么。
+ * 副图有两种切换方式，互为补充
+ * --------------------------
+ *  · 点副图本体 → 轮到下一个指标。看盘时视线就落在副图上，「看→换→再看」
+ *    连点两下就能来回对比，是高频动作的最短路径。
+ *  · 点副图标题按钮 → 打开底部抽屉（BaseSheet），一次列出全部指标。
+ *    五个指标里按名字直接跳转（而不是连点三次轮过去）只有抽屉能做到，
+ *    并且能附带显示每个指标的读数口径。
+ * 两种入口并存：高频靠轮切，跨多个指标靠抽屉。
  */
 import { computed, ref } from 'vue'
 import MiniChart from '@/components/MiniChart.vue'
 import type { SubKind } from '@/components/MiniChart.vue'
 import DepthPanel from '@/components/DepthPanel.vue'
+import BaseSheet from '@/components/BaseSheet.vue'
 import type { BarItem, Depth, MinutePoint } from '@/api/types'
 import { SUB_OPTIONS, subReadout } from '@/utils/indicators'
 import type { Readout, SeriesInput } from '@/utils/indicators'
@@ -169,6 +172,20 @@ function cycleSub() {
   const next = (ids.indexOf(props.sub) + 1) % ids.length
   emit('update:sub', ids[next])
 }
+
+/** 副图选择抽屉的开合 */
+const drawerOpen = ref(false)
+
+/**
+ * 从抽屉里选一个副图。
+ *
+ * 选中已激活的项不重复 emit：父级会因此重新取数，图会白闪一下，
+ * 而用户的实际意图只是「关掉抽屉」。直接关闭即可。
+ */
+function chooseSub(id: SubKind) {
+  drawerOpen.value = false
+  if (id !== props.sub) emit('update:sub', id)
+}
 </script>
 
 <template>
@@ -226,7 +243,8 @@ function cycleSub() {
 
         <!-- 副图标题行：左侧切换按钮，右侧指标读数 -->
         <div class="kc-subhead">
-          <button class="kc-subbtn" @click.stop="cycleSub">
+          <!-- 标题按钮开抽屉（按名字直选）；副图本体才是轮切换 -->
+          <button class="kc-subbtn" @click.stop="drawerOpen = true">
             {{ subLabel }}
             <svg viewBox="0 0 12 12" width="9" height="9" aria-hidden="true">
               <path d="M2 4.5L6 8.5L10 4.5" fill="none" stroke="currentColor" stroke-width="1.6" />
@@ -258,7 +276,7 @@ function cycleSub() {
             :multi-day="fiveDay"
             :height="subHeight"
           />
-          <span class="kc-subswap">切换</span>
+          <span class="kc-subswap">点图切换</span>
         </div>
 
         <!-- 时间轴：与主图副图共用时间位，按当前周期取刻度格式 -->
@@ -280,6 +298,23 @@ function cycleSub() {
         <DepthPanel :depth="depth" />
       </div>
     </div>
+
+    <!-- 副图选择抽屉：走全局 BaseSheet，圆角/遮罩/返回键/下滑关闭全站一致 -->
+    <BaseSheet :show="drawerOpen" max-height="60vh" @update:show="drawerOpen = $event">
+      <div class="kc-sheet-head">副图指标</div>
+      <div class="kc-sheet-list">
+        <button
+          v-for="opt in SUB_OPTIONS"
+          :key="opt.id"
+          class="kc-sheet-row"
+          :class="{ on: opt.id === sub }"
+          @click="chooseSub(opt.id)"
+        >
+          <span class="kc-sheet-name">{{ opt.label }}</span>
+          <span v-if="opt.id === sub" class="kc-sheet-flag">当前</span>
+        </button>
+      </div>
+    </BaseSheet>
 
   </div>
 </template>
@@ -441,6 +476,49 @@ function cycleSub() {
   color: var(--c-text-3);
   opacity: 0.6;
   pointer-events: none;
+}
+
+/* 副图选择抽屉 */
+.kc-sheet-head {
+  padding: 2px 16px 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--c-text);
+}
+
+.kc-sheet-list {
+  padding: 0 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.kc-sheet-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 13px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--c-text-2);
+  font-size: 14px;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.kc-sheet-row.on {
+  border-color: rgba(232, 56, 61, 0.5);
+  background: rgba(232, 56, 61, 0.1);
+  color: var(--c-text);
+  font-weight: 600;
+}
+
+.kc-sheet-flag {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--c-brand);
 }
 
 /* ④ 时间轴 */
