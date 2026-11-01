@@ -42,10 +42,14 @@ import type { SubKind } from '@/components/MiniChart.vue'
 import TradeSheet from '@/components/TradeSheet.vue'
 import WatchAddSheet from '@/components/WatchAddSheet.vue'
 import { useLongPress } from '@/composables/useLongPress'
+import { useMarket } from '@/stores/market'
 import { fmtAmount, fmtPct, fmtPrice, fmtVolume, trendClass } from '@/utils/format'
 
 const route = useRoute()
 const router = useRouter()
+// 交易规则里的结算方式（T+1 / T+0）由服务端时钟决定，不能在这里写死：
+// 同一份客户端要同时适配三种结算模式，写死会让 T+0 环境显示错误的规则。
+const { session } = useMarket()
 
 /**
  * 同一个组件同时服务 /stock/:code 与 /index/:code。
@@ -403,7 +407,7 @@ const title = computed(() => {
         <p v-if="meta?.note" class="line"><span class="k">说明</span>{{ meta.note }}</p>
         <p v-if="!isIndex" class="line">
           <span class="k">交易规则</span>
-          T+1，{{ meta?.lot_size ?? 100 }} 股起，涨停 {{ fmtPrice(meta?.limit_up ?? 0) }} / 跌停
+          {{ session?.settle_label ?? 'T+1' }}，{{ meta?.lot_size ?? 100 }} 股起，涨停 {{ fmtPrice(meta?.limit_up ?? 0) }} / 跌停
           {{ fmtPrice(meta?.limit_down ?? 0) }}
         </p>
       </section>

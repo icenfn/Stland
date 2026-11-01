@@ -35,7 +35,7 @@ export type SubKind = 'volume' | 'macd' | 'kdj' | 'ratio' | 'game'
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 /** 交易时段标签，与服务端 BarItem.segment 对齐 */
-type Segment = 'pre' | 'auction' | 'continuous' | 'lunch' | 'post' | 'closed'
+type Segment = 'pre' | 'auction' | 'continuous' | 'lunch' | 'post' | 'fixed' | 'closed'
 
 interface Point {
   t: number
@@ -73,6 +73,9 @@ const SEGMENT_TINT: Record<string, string> = {
   pre: 'rgba(96,140,255,0.14)',
   auction: 'rgba(232,179,57,0.16)',
   post: 'rgba(150,120,240,0.14)',
+  // 盘后固定价格交易：成交价固定，但仍是有效交易时段，
+  // 用与「盘后」相近的紫色系区分，避免被当成休市的灰底
+  fixed: 'rgba(120,150,235,0.12)',
   closed: 'rgba(140,150,165,0.08)',
 }
 

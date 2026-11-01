@@ -73,6 +73,15 @@ export interface StockMeta {
   note?: string
 }
 
+/**
+ * 交易时钟快照。
+ *
+ * 服务端把「结算规则」与「交易时段」拆成两组正交字段：
+ * - `mode`/`settle` 只回答「当日买入何时可卖」，与几点无关；
+ * - `preset`/`segment`/`phase` 只回答「现在是哪一段、能不能申报、价格会不会动」；
+ * - `is_open`（能否连续撮合）与 `can_trade`（能否申报）是两个独立能力位，
+ *   集合竞价/盘后固定价格交易就是 `can_trade=true, is_open=false`。
+ */
 export interface SessionState {
   phase: string
   label: string
@@ -80,11 +89,19 @@ export interface SessionState {
   can_trade: boolean
   trade_date: string
   seconds_left?: number
-  /** 交易模式：a_share=A股 / us=美股 / continuous=连续竞价 */
+  /** 结算模式：t1=T+1 / t0=T+0 / debug=调试（时段失效） */
   mode?: string
   mode_label?: string
-  /** 粗粒度时段：pre/auction/continuous/lunch/post/closed */
+  /** 实际结算规则（调试模式按 t0）：t1 / t0 */
+  settle?: string
+  settle_label?: string
+  /** 时段预设：a_share / us / custom */
+  preset?: string
+  preset_label?: string
+  /** 粗粒度时段：pre/auction/continuous/lunch/post/fixed/closed */
   segment?: string
+  segment_label?: string
+  timezone_label?: string
 }
 
 /** 指数快照：现在和个股一样有代码、可跳转详情 */
@@ -179,11 +196,19 @@ export interface Depth {
 
 /**
  * K 线柱所属的交易时段。
- * 服务端按交易模式给出：pre=盘前、auction=集合竞价、continuous=连续竞价、
- * lunch=午休、post=盘后、closed=休市。客户端据此把盘前/竞价/盘后单独着色，
+ * 服务端按当前时段表给出：pre=盘前、auction=集合竞价、continuous=连续竞价、
+ * lunch=午休、post=盘后、fixed=盘后固定价格交易、closed=休市。
+ * 客户端据此把盘前/竞价/盘后/盘后固定价格单独着色，
  * 避免「一根柱子既含竞价又含连续竞价」造成涨跌幅对不上盘口。
  */
-export type BarSegment = 'pre' | 'auction' | 'continuous' | 'lunch' | 'post' | 'closed'
+export type BarSegment =
+  | 'pre'
+  | 'auction'
+  | 'continuous'
+  | 'lunch'
+  | 'post'
+  | 'fixed'
+  | 'closed'
 
 export interface BarItem {
   time: number | string

@@ -32,16 +32,17 @@
  * 数值与图形由同一套指标实现产出（见 utils/indicators），不会出现「标注 81、
  * 曲线却在 60」这种口径分裂。
  *
- * 为什么副图切换走全局底部抽屉
- * --------------------------
- * 抽屉的圆角、遮罩、返回键、下滑关闭只在 BaseSheet 里实现一次；组件内再手写
- * 一层遮罩，就会出现「这个抽屉能下滑关、那个不能」的不一致，返回键也没有人管。
+ * 为什么副图点击直接轮切换
+ * ----------------------
+ * 副图只有五个指标，而且看盘时的动作是「看→换一个看看→再换回来」。
+ * 走抽屉要先点开、再选、再关闭，三步才能换一次；改成点击副图任意位置
+ * 直接轮到下一个指标，同一个动作连点两下就能来回对比。
+ * 标题行保留指标名与「切换」提示，用户仍能看出点一下会发生什么。
  */
 import { computed, ref } from 'vue'
 import MiniChart from '@/components/MiniChart.vue'
 import type { SubKind } from '@/components/MiniChart.vue'
 import DepthPanel from '@/components/DepthPanel.vue'
-import BaseSheet from '@/components/BaseSheet.vue'
 import type { BarItem, Depth, MinutePoint } from '@/api/types'
 import { SUB_OPTIONS, subReadout } from '@/utils/indicators'
 import type { Readout, SeriesInput } from '@/utils/indicators'
@@ -104,8 +105,6 @@ const MORE_TABS: Array<{ id: string; label: string }> = [
 
 /** 「更多」展开态由组件自己持有：页面不必再接一个容易漏掉的绑定 */
 const moreOpen = ref(false)
-/** 副图切换抽屉 */
-const drawerOpen = ref(false)
 
 /** 当前选中的周期 id */
 const activeId = computed(() => {
@@ -157,9 +156,18 @@ function pick(id: string) {
   emit('select', id)
 }
 
-function setSub(id: SubKind) {
-  emit('update:sub', id)
-  drawerOpen.value = false
+/**
+ * 点击副图：轮到下一个指标。
+ *
+ * 顺序即 SUB_OPTIONS 的排列（成交量 → MACD → KDJ → 量比 → 分时博弈），
+ * 走到末尾回到第一个。副图内任何位置都可以点 —— 看图时视线就落在那里，
+ * 比回头找标题按钮顺手。
+ */
+function cycleSub() {
+  const ids = SUB_OPTIONS.map((s) => s.id)
+  if (!ids.length) return
+  const next = (ids.indexOf(props.sub) + 1) % ids.length
+  emit('update:sub', ids[next])
 }
 </script>
 
@@ -218,7 +226,7 @@ function setSub(id: SubKind) {
 
         <!-- 副图标题行：左侧切换按钮，右侧指标读数 -->
         <div class="kc-subhead">
-          <button class="kc-subbtn" @click.stop="drawerOpen = true">
+          <button class="kc-subbtn" @click.stop="cycleSub">
             {{ subLabel }}
             <svg viewBox="0 0 12 12" width="9" height="9" aria-hidden="true">
               <path d="M2 4.5L6 8.5L10 4.5" fill="none" stroke="currentColor" stroke-width="1.6" />
@@ -237,9 +245,9 @@ function setSub(id: SubKind) {
           </span>
         </div>
 
-        <!-- 点击副图本体即可切换指标：副图是「看图时视线落点」，
+        <!-- 点击副图本体即轮到下一个指标：副图是「看图时视线落点」，
              比回到小小的标题按钮更顺手。 -->
-        <div class="kc-subwrap" @click="drawerOpen = true">
+        <div class="kc-subwrap" @click="cycleSub">
           <MiniChart
             part="sub"
             :mode="mode"
@@ -273,27 +281,6 @@ function setSub(id: SubKind) {
       </div>
     </div>
 
-    <!-- 副图切换：走全局底部抽屉（圆角/遮罩/返回键/下滑关闭都复用同一套） -->
-    <BaseSheet v-model:show="drawerOpen" max-height="60vh">
-      <div class="kc-sheet-head">
-        <span class="kc-sheet-title">副图指标</span>
-      </div>
-      <div class="kc-sheet-grid">
-        <button
-          v-for="s in SUB_OPTIONS"
-          :key="s.id"
-          class="kc-sheet-item"
-          :class="{ on: sub === s.id }"
-          @click="setSub(s.id)"
-        >
-          {{ s.label }}
-        </button>
-      </div>
-      <p v-if="subEstimated" class="kc-sheet-tip">
-        分时博弈按「相邻分钟价格方向 × 成交量」估算净流入，只表达量价配合方向，
-        不等同券商的逐笔资金流。
-      </p>
-    </BaseSheet>
   </div>
 </template>
 
@@ -463,40 +450,4 @@ function setSub(id: SubKind) {
   margin-top: 2px;
 }
 
-/* 抽屉内：标题与选项网格 */
-.kc-sheet-head {
-  padding: 2px 0 10px;
-}
-.kc-sheet-title {
-  font-size: 15px;
-  font-weight: 700;
-  color: var(--c-text);
-}
-.kc-sheet-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 8px;
-}
-.kc-sheet-item {
-  padding: 11px 4px;
-  border-radius: 10px;
-  border: 1px solid var(--c-line);
-  background: var(--c-card);
-  color: var(--c-text-2);
-  font-size: 13px;
-  font-family: inherit;
-  cursor: pointer;
-}
-.kc-sheet-item.on {
-  color: var(--c-brand);
-  border-color: rgba(232, 56, 61, 0.5);
-  background: rgba(232, 56, 61, 0.12);
-  font-weight: 600;
-}
-.kc-sheet-tip {
-  margin: 12px 0 0;
-  font-size: 11px;
-  line-height: 1.5;
-  color: var(--c-text-3);
-}
 </style>
