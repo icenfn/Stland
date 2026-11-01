@@ -41,7 +41,7 @@
  *    并且能附带显示每个指标的读数口径。
  * 两种入口并存：高频靠轮切，跨多个指标靠抽屉。
  */
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import MiniChart from '@/components/MiniChart.vue'
 import type { SubKind } from '@/components/MiniChart.vue'
 import DepthPanel from '@/components/DepthPanel.vue'
@@ -137,6 +137,64 @@ const series = computed<SeriesInput>(() => {
   }
 })
 
+/**
+ * 跨主图/副图的十字光标。
+ *
+ * 主图与副图是两块独立 canvas，竖线要一路穿到副图里，只能在两者之上盖一层
+ * DOM 覆盖层（pointer-events:none，不吃手势）。MiniChart 只负责算「吸附到哪根
+ * K 线、读数是几」，坐标换算与绘制都交给这里。
+ */
+interface CrosshairState {
+  x: number
+  y: number
+  price: string
+  time: string
+  info: string[]
+}
+
+const crosshair = ref<CrosshairState | null>(null)
+/** 图表左栏：用来判断点击是否落在图外 */
+const leftRef = ref<HTMLElement | null>(null)
+/** 时间轴行高；竖线在这里收住，不压到刻度文字上 */
+const AXIS_H = 16
+
+function onCrosshair(p: CrosshairState | null) {
+  crosshair.value = p
+}
+
+/**
+ * 点图外的空白处清除光标。
+ *
+ * 覆盖层本身不接事件（否则会挡掉副图点击与轮切换），所以只能把监听挂在
+ * document 上，用 capture 抢在业务点击之前判断「是不是在图里」。
+ */
+function onDocPointerDown(ev: PointerEvent) {
+  const el = leftRef.value
+  if (!el) return
+  if (el.contains(ev.target as Node)) return
+  crosshair.value = null
+}
+
+onMounted(function () {
+  document.addEventListener('pointerdown', onDocPointerDown, true)
+})
+
+onBeforeUnmount(function () {
+  document.removeEventListener('pointerdown', onDocPointerDown, true)
+})
+
+// 换周期、换标的、换副图后旧下标已无意义，直接把光标清掉
+watch(
+  [
+    function () { return props.bars },
+    function () { return props.minutes },
+    function () { return props.sub },
+    function () { return props.period },
+    function () { return props.fiveDay },
+  ],
+  function () { crosshair.value = null },
+)
+
 /** 副图读数：K/D/J、DIF/DEA、量比、净流入 */
 const readouts = computed<Readout[]>(() => subReadout(props.sub, series.value))
 
@@ -230,7 +288,7 @@ function chooseSub(id: SubKind) {
 
     <!-- ②③④⑤ 主副图与五档 -->
     <div class="kc-body">
-      <div class="kc-left">
+      <div ref="leftRef" class="kc-left">
         <MiniChart
           part="main"
           :mode="mode"
@@ -239,6 +297,8 @@ function chooseSub(id: SubKind) {
           :prev-close="prevClose"
           :multi-day="fiveDay"
           :height="mainHeight"
+          :hide-hi-lo="!!crosshair"
+          @crosshair="onCrosshair"
         />
 
         <!-- 副图标题行：左侧切换按钮，右侧指标读数 -->
@@ -290,6 +350,27 @@ function chooseSub(id: SubKind) {
             :multi-day="fiveDay"
             :height="16"
           />
+        </div>
+
+        <!-- 十字光标：盖在主图与副图之上，竖线才能一路穿过两块 canvas；
+             价格牌贴左边、时间牌落在时间轴行 -->
+        <div v-if="crosshair" class="kc-cross">
+          <span
+            class="kc-cross-v"
+            :style="{ left: crosshair.x + 'px', height: 'calc(100% - ' + AXIS_H + 'px)' }"
+          />
+          <span class="kc-cross-h" :style="{ top: crosshair.y + 'px' }" />
+          <span class="kc-cross-price" :style="{ top: crosshair.y - 7 + 'px' }">
+            {{ crosshair.price }}
+          </span>
+          <span
+            v-if="crosshair.time"
+            class="kc-cross-time"
+            :style="{ left: crosshair.x + 'px' }"
+          >{{ crosshair.time }}</span>
+          <span v-if="crosshair.info.length" class="kc-cross-info">
+            {{ crosshair.info.join('  ') }}
+          </span>
         </div>
       </div>
 
@@ -391,8 +472,81 @@ function chooseSub(id: SubKind) {
   gap: 8px;
 }
 .kc-left {
+  position: relative;
   flex: 1 1 auto;
   min-width: 0;
+}
+
+/* 十字光标覆盖层：只画线，不接手势（否则会挡掉副图点击轮切换） */
+.kc-cross {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+}
+
+/* 虚线用渐变画，比 canvas 的 setLineDash 更省事，且能与 CSS 变量统一 */
+.kc-cross-v {
+  position: absolute;
+  top: 0;
+  width: 1px;
+  background: repeating-linear-gradient(
+    to bottom,
+    rgba(226, 232, 240, 0.55) 0 3px,
+    transparent 3px 6px
+  );
+}
+
+.kc-cross-h {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: repeating-linear-gradient(
+    to right,
+    rgba(226, 232, 240, 0.55) 0 3px,
+    transparent 3px 6px
+  );
+}
+
+/* 价格牌放左边：右侧留给五档栏，压在那边会被挤到图外面 */
+.kc-cross-price {
+  position: absolute;
+  left: 0;
+  padding: 1px 4px;
+  border-radius: 2px;
+  background: rgba(232, 179, 57, 0.94);
+  color: #12151c;
+  font-size: 10px;
+  line-height: 12px;
+  font-variant-numeric: tabular-nums;
+  font-family: inherit;
+}
+
+/* 时间牌落在时间轴这一行，与刻度共用同一条基线 */
+.kc-cross-time {
+  position: absolute;
+  bottom: 0;
+  transform: translateX(-50%);
+  padding: 1px 5px;
+  border-radius: 2px;
+  background: rgba(232, 179, 57, 0.94);
+  color: #12151c;
+  font-size: 10px;
+  line-height: 14px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  font-family: inherit;
+}
+
+.kc-cross-info {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  font-family: inherit;
 }
 .kc-side {
   flex: 0 0 96px;

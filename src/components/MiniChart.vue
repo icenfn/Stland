@@ -136,6 +136,8 @@ const props = withDefaults(
     slots?: number
     /** 当前 K 线周期（1min/5min/day/week/month…），只用于横轴刻度格式 */
     period?: string
+    /** 隐藏左上/左下高低点标注：十字光标激活时让位，避免文字叠在一起 */
+    hideHiLo?: boolean
   }>(),
   {
     mode: 'minute',
@@ -146,6 +148,7 @@ const props = withDefaults(
     multiDay: false,
     slots: 0,
     period: 'day',
+    hideHiLo: false,
     minutes: () => [],
     bars: () => [],
   },
@@ -157,13 +160,32 @@ let ro: ResizeObserver | null = null
 /**
  * 十字光标位置（仅主图）。
  *
- * x/y 是相对画布的 CSS 像素；idx 是吸附到的数据下标 —— 竖线必须落在某根 K 线
- * （或某个分钟点）的正中，否则光标会停在两根柱子之间，读出来的时间没有对应
- * 的行情。横线不吸附，自由跟随手指，用来读任意价位。
+ * x/y 是相对主图画布的 CSS 像素；idx 是吸附到的数据下标 —— 竖线必须落在某根
+ * K 线（或某个分钟点）的正中，否则光标会停在两根柱子之间，读出来的时间没有
+ * 对应的行情。横线不吸附，自由跟随手指，用来读任意价位。
+ *
+ * 真正画线的是 K 线组件里的覆盖层，不是这块 canvas：主图和副图是两块独立
+ * canvas，竖线要一路穿到副图里去，只能在两者之上盖一层普通 DOM。这里只负责
+ * 「算坐标、吸附、读数值」，算完通过 emit 把位置交给父组件。
  */
 const hover = ref<{ y: number; idx: number } | null>(null)
-/** 手指是否按下：移动端只有按住才显示光标，否则一碰就留在图上 */
+/** 指针是否按下：移动端只有按住才跟随，否则一碰就留在图上 */
 let pressing = false
+/** 光标是否已「钉住」（松手后固定，5 秒后自动消失） */
+let pinned = false
+let pinTimer: number | null = null
+
+const emit = defineEmits<{
+  crosshair: [
+    payload: {
+      x: number
+      y: number
+      price: string
+      time: string
+      info: string[]
+    } | null,
+  ]
+}>()
 
 const UP = '#ff4d4f'
 const DOWN = '#12b76a'
@@ -826,13 +848,22 @@ function crosshairInfo(): string[] {
  * 因为纯文字压在网格与 K 线上会被吃掉；标签颜色用中性金，不参与红绿语义，
  * 避免「光标价格是红的」被误读成涨。
  */
-function drawCrosshair(ctx: CanvasRenderingContext2D, W: number, H: number) {
+/**
+ * 算出光标要显示的信息，交给父组件绘制。
+ *
+ * 只算不算画：竖线要跨主图与副图，坐标必须用「相对整块图表区域」的像素，
+ * 而这块 canvas 只知道自己那一格。价格由 y 反解出来的口径必须与主图一致，
+ * 因此仍然走 mainRange()。
+ */
+function buildCrosshair() {
   const hv = hover.value
-  if (!hv) return
+  if (!hv) return null
   const rng = mainRange()
-  if (!rng) return
-  const span = rng.hi - rng.lo || 1
-  const y = Math.min(Math.max(0, hv.y), H)
+  const el = canvasRef.value
+  if (!rng || !el) return null
+  const rect = el.getBoundingClientRect()
+  const W = rect.width
+  const H = rect.height || 1
 
   // 竖线吸附到数据点中心
   let xs = 0
@@ -846,56 +877,54 @@ function drawCrosshair(ctx: CanvasRenderingContext2D, W: number, H: number) {
     xs = tl.pos[hv.idx] * slot + slot / 2
   }
 
-  ctx.save()
-  ctx.strokeStyle = 'rgba(226,232,240,0.55)'
-  ctx.lineWidth = 1
-  ctx.setLineDash([3, 3])
-  ctx.beginPath()
-  ctx.moveTo(xs, 0)
-  ctx.lineTo(xs, H)
-  ctx.moveTo(0, y)
-  ctx.lineTo(W, y)
-  ctx.stroke()
-  ctx.setLineDash([])
-
-  const font = '10px -apple-system, "PingFang SC", system-ui, sans-serif'
-  ctx.font = font
-  ctx.textBaseline = 'middle'
-  ctx.textAlign = 'center'
-
-  // 右侧价格牌
-  const price = rng.lo + ((H - y) / H) * span
-  const ptxt = price.toFixed(2)
-  const pw = ctx.measureText(ptxt).width + 8
-  const ph = 14
-  const py = Math.min(Math.max(y - ph / 2, 0), H - ph)
-  ctx.fillStyle = 'rgba(232,179,57,0.94)'
-  ctx.fillRect(W - pw, py, pw, ph)
-  ctx.fillStyle = '#12151c'
-  ctx.fillText(ptxt, W - pw / 2, py + ph / 2 + 0.5)
-
-  // 底部时间牌
-  const ttxt = crosshairTime()
-  if (ttxt) {
-    const tw = ctx.measureText(ttxt).width + 10
-    const th = 14
-    const tx = Math.min(Math.max(xs - tw / 2, 0), W - tw)
-    ctx.fillStyle = 'rgba(232,179,57,0.94)'
-    ctx.fillRect(tx, H - th, tw, th)
-    ctx.fillStyle = '#12151c'
-    ctx.fillText(ttxt, tx + tw / 2, H - th / 2 + 0.5)
+  const price = rng.lo + ((H - hv.y) / H) * (rng.hi - rng.lo)
+  return {
+    x: xs,
+    y: Math.min(Math.max(0, hv.y), H),
+    price: price.toFixed(2),
+    time: crosshairTime(),
+    info: crosshairInfo(),
   }
-
-  // 顶部读数：右对齐，避开左上角的最低价位标签
-  const info = crosshairInfo()
-  if (info.length && W > 200) {
-    ctx.textAlign = 'right'
-    ctx.fillStyle = 'rgba(255,255,255,0.78)'
-    ctx.fillText(info.join('  '), W - 4, 10)
-  }
-
-  ctx.restore()
 }
+
+/** 把当前光标状态推给父组件（null 表示清除） */
+function pushCrosshair() {
+  emit('crosshair', buildCrosshair())
+}
+
+/**
+ * 光标钉住后 5 秒自动消失。
+ *
+ * 为什么是 5 秒：读一个价位/时间点之后再抬头看别处，5 秒够用；一直留着会挡住
+ * 后面的 K 线，而且用户很难意识到「它其实已经不跟随了」。
+ */
+function armPinTimer() {
+  clearPinTimer()
+  pinTimer = window.setTimeout(function () {
+    clearCrosshair()
+  }, 5000)
+}
+
+function clearPinTimer() {
+  if (pinTimer !== null) {
+    window.clearTimeout(pinTimer)
+    pinTimer = null
+  }
+}
+
+/** 立即清除光标（点击空白处、组件卸载、5 秒超时都会走到这里） */
+function clearCrosshair() {
+  clearPinTimer()
+  pressing = false
+  pinned = false
+  if (hover.value) {
+    hover.value = null
+    pushCrosshair()
+    render()
+  }
+}
+
+defineExpose({ clearCrosshair })
 
 /**
  * 横轴刻度：贴着副图下方渲染，刻度位置与主图/副图共用同一套时间位。
@@ -1035,7 +1064,7 @@ function render() {
     if (props.mode === 'kline') {
       const bars = props.bars ?? []
       drawKline(ctx, W, H)
-      if (bars.length) {
+      if (bars.length && !props.hideHiLo) {
         drawHiLo(
           ctx,
           W,
@@ -1047,13 +1076,11 @@ function render() {
     } else {
       const pts = props.minutes ?? []
       drawMinute(ctx, W, H)
-      if (pts.length) {
+      if (pts.length && !props.hideHiLo) {
         const prices = pts.map((p) => p.price)
         drawHiLo(ctx, W, H, Math.max(...prices), Math.min(...prices))
       }
     }
-    // 光标画在最后：它要压在 K 线之上
-    drawCrosshair(ctx, W, H)
     return
   }
   if (props.part === 'sub') {
@@ -1131,27 +1158,46 @@ function locate(ev: PointerEvent) {
     idx = best
   }
   hover.value = { y, idx }
-  render()
+  pushCrosshair()
 }
 
 function onDown(ev: PointerEvent) {
   if (props.part !== 'main') return
+  // 新的按下动作接管光标：解除上一次的钉住与倒计时
+  pinned = false
+  clearPinTimer()
   pressing = true
   ;(ev.currentTarget as HTMLElement).setPointerCapture?.(ev.pointerId)
   locate(ev)
+  render()
 }
 
 function onMove(ev: PointerEvent) {
   if (props.part !== 'main') return
-  // 桌面端鼠标悬停即显示；触屏必须按住，否则抬手后光标会黏在图上
+  // 已钉住的光标不再跟随移动：用户松手后要的就是「停在这一根」，
+  // 此时手指再划过图面不该把读数带着跑
+  if (pinned) return
+  // 桌面端鼠标悬停即显示；触屏必须按住，否则一碰就留下
   if (ev.pointerType === 'touch' && !pressing) return
   locate(ev)
+  render()
 }
 
 function onUp() {
+  if (props.part !== 'main') return
+  if (!pressing) return
   pressing = false
-  hover.value = null
-  render()
+  // 松手后固定：保留当前 hover，改为「钉住」并起 5 秒倒计时
+  if (hover.value) {
+    pinned = true
+    armPinTimer()
+  }
+}
+
+function onLeave() {
+  if (props.part !== 'main') return
+  // 鼠标移出且不是钉住状态时清掉，避免光标悬在图上不走
+  if (!pinned) clearCrosshair()
 }
 
 onMounted(() => {
@@ -1185,7 +1231,7 @@ watch(
     @pointermove="onMove"
     @pointerup="onUp"
     @pointercancel="onUp"
-    @pointerleave="onUp"
+    @pointerleave="onLeave"
   />
 </template>
 
