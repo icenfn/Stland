@@ -6,7 +6,7 @@ import { useMarket } from '@/stores/market'
 import { marketApi } from '@/api'
 import type { IndexQuote } from '@/api/types'
 import QuoteRow from '@/components/QuoteRow.vue'
-import { fmtPct } from '@/utils/format'
+import { fmtPct, fmtPrice, trendClass } from '@/utils/format'
 
 const market = useMarket()
 const { state } = market
@@ -80,11 +80,11 @@ onBeforeUnmount(() => {
         @click="router.push(`/index/${idx.code}`)"
       >
         <span class="idx-name">{{ idx.name }}</span>
-        <span class="idx-price tabular" :class="idx.change_pct > 0 ? 'up' : idx.change_pct < 0 ? 'down' : 'flat'">
-          {{ idx.price.toFixed(2) }}
+        <span class="idx-price tabular" :class="trendClass(idx.change_pct)">
+          {{ idx.has_data === false ? '--' : fmtPrice(idx.price) }}
         </span>
-        <span class="idx-pct tabular" :class="idx.change_pct > 0 ? 'up' : idx.change_pct < 0 ? 'down' : 'flat'">
-          {{ fmtPct(idx.change_pct) }}
+        <span class="idx-pct tabular" :class="trendClass(idx.change_pct)">
+          {{ idx.has_data === false ? '--' : fmtPct(idx.change_pct) }}
         </span>
       </button>
     </div>

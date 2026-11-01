@@ -89,6 +89,9 @@ const watchLongPress = useLongPress(() => {
   addSheetOpen.value = true
 })
 
+/** 指数是否有可用成分报价；个股恒为 true */
+const hasData = computed(() => (isIndex.value ? quote.value?.has_data !== false : true))
+
 const pctClass = computed(() => trendClass(quote.value?.change_pct ?? 0))
 const priceClass = computed(() => trendClass(quote.value?.change ?? 0))
 
@@ -96,17 +99,25 @@ const priceClass = computed(() => trendClass(quote.value?.change ?? 0))
 const statRows = computed(() => {
   const q = quote.value
   if (!q) return []
+  // 指数无成分报价时点位字段全为 null，此时整张指标表退化为「--」，
+  // 而不是让 NaN 参与运算后显示 NaN%。
+  const has = isIndex.value ? hasData.value : true
+  const rel = (a?: number | null, b?: number | null) =>
+    has && a != null && b != null ? trendClass(a - b) : undefined
   const rows: Array<{ k: string; v: string; cls?: string }> = [
-    { k: '今开', v: fmtPrice(q.open), cls: trendClass(q.open - q.prev_close) },
-    { k: '最高', v: fmtPrice(q.high), cls: trendClass(q.high - q.prev_close) },
-    { k: '最低', v: fmtPrice(q.low), cls: trendClass(q.low - q.prev_close) },
-    { k: '昨收', v: fmtPrice(q.prev_close) },
+    { k: '今开', v: has ? fmtPrice(q.open) : '--', cls: rel(q.open, q.prev_close) },
+    { k: '最高', v: has ? fmtPrice(q.high) : '--', cls: rel(q.high, q.prev_close) },
+    { k: '最低', v: has ? fmtPrice(q.low) : '--', cls: rel(q.low, q.prev_close) },
+    { k: '昨收', v: has ? fmtPrice(q.prev_close) : '--' },
     { k: '成交量', v: fmtVolume(q.volume) },
     { k: '成交额', v: fmtAmount(q.amount) },
   ]
   if (isIndex.value) {
     rows.push(
-      { k: '振幅', v: q.prev_close ? `${(((q.high - q.low) / q.prev_close) * 100).toFixed(2)}%` : '—' },
+      {
+        k: '振幅',
+        v: has && q.prev_close ? `${(((q.high! - q.low!) / q.prev_close) * 100).toFixed(2)}%` : '—',
+      },
       { k: '成分', v: `${q.members ?? 0} 家` },
     )
   } else {
@@ -126,30 +137,37 @@ const statRows = computed(() => {
  * 不必在每处取值时判空。
  */
 function toDetail(src: Quote | IndexQuote, index: boolean): DetailQuote {
+  // 指数点位可为 null（无成分报价）。这里统一收敛成 0 让下游类型稳定，
+  // 是否展示则由 `has_data` 决定 —— 模板不会把 0 当成真实点位渲染。
+  const num = (v: number | null | undefined): number => (v == null ? 0 : v)
   const common = {
     code: src.code,
     name: src.name,
-    price: src.price,
-    prev_close: src.prev_close,
-    open: src.open,
-    high: src.high,
-    low: src.low,
+    price: num(src.price),
+    prev_close: num(src.prev_close),
+    open: num(src.open),
+    high: num(src.high),
+    low: num(src.low),
     volume: src.volume ?? 0,
-    amount: src.amount,
-    change: src.change,
-    change_pct: src.change_pct,
+    amount: num(src.amount),
+    change: num(src.change),
+    change_pct: num(src.change_pct),
   }
   if (index) {
     const ix = src as IndexQuote
     return {
       ...common,
       // 指数振幅只能现算：没有换手率概念，按 0 处理
-      amplitude: ix.prev_close ? ((ix.high - ix.low) / ix.prev_close) * 100 : 0,
+      amplitude:
+        ix.high != null && ix.low != null && ix.prev_close
+          ? ((ix.high - ix.low) / ix.prev_close) * 100
+          : 0,
       turnover_rate: 0,
       up: ix.up,
       down: ix.down,
       flat: ix.flat,
       members: ix.members,
+      has_data: ix.has_data !== false,
       is_index: true,
     }
   }
@@ -322,10 +340,15 @@ const title = computed(() => {
       <section class="head">
         <div class="head-top">
           <div class="price-block">
-            <div class="price tabular" :class="priceClass">{{ fmtPrice(quote.price) }}</div>
-            <div class="delta tabular" :class="pctClass">
-              <span>{{ quote.change >= 0 ? '+' : '' }}{{ quote.change.toFixed(2) }}</span>
-              <span>{{ quote.change_pct >= 0 ? '+' : '' }}{{ fmtPct(quote.change_pct) }}</span>
+            <div class="price tabular" :class="priceClass">
+              {{ hasData ? fmtPrice(quote.price) : '--' }}
+            </div>
+            <div v-if="hasData" class="delta tabular" :class="pctClass">
+              <span>{{ (quote.change ?? 0) >= 0 ? '+' : '' }}{{ (quote.change ?? 0).toFixed(2) }}</span>
+              <span>{{ (quote.change_pct ?? 0) >= 0 ? '+' : '' }}{{ fmtPct(quote.change_pct) }}</span>
+            </div>
+            <div v-else class="delta tabular flat">
+              <span>暂无成分报价</span>
             </div>
           </div>
           <div class="tags">

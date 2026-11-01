@@ -122,10 +122,10 @@ function openStock(code?: string) {
       >
         <span class="ic-name">{{ it.name }}</span>
         <span class="ic-val tabular" :class="trendClass(it.change_pct)">
-          {{ fmtPrice(it.price) }}
+          {{ it.has_data === false ? '--' : fmtPrice(it.price) }}
         </span>
         <span class="ic-chg tabular" :class="trendClass(it.change_pct)">
-          {{ fmtPct(it.change_pct) }}
+          {{ it.has_data === false ? '--' : fmtPct(it.change_pct) }}
         </span>
       </button>
     </div>
@@ -139,16 +139,19 @@ function openStock(code?: string) {
               <span class="index-name">{{ index?.name ?? '股岛综合指数' }}</span>
               <span class="idx-code tabular">{{ index?.code ?? '—' }}</span>
             </div>
-            <div class="index-price tabular" :class="trendClass(index?.change ?? 0)">
-              {{ ready ? fmtPrice(index?.price ?? 0) : '--' }}
+            <div class="index-price tabular" :class="trendClass(index?.change)">
+              {{ index?.has_data === false ? '--' : fmtPrice(index?.price) }}
             </div>
-            <div class="index-change tabular" :class="trendClass(index?.change ?? 0)">
-              {{ (index?.change ?? 0) > 0 ? '+' : '' }}{{ fmtPrice(index?.change ?? 0) }}
-              <span class="pct">{{ fmtPct(index?.change_pct ?? 0) }}</span>
+            <div class="index-change tabular" :class="trendClass(index?.change)">
+              <template v-if="index?.has_data === false">--</template>
+              <template v-else>
+                {{ (index?.change ?? 0) > 0 ? '+' : '' }}{{ fmtPrice(index?.change) }}
+                <span class="pct">{{ fmtPct(index?.change_pct) }}</span>
+              </template>
             </div>
             <div class="idx-meta">
-              <span>最高 <b class="tabular up">{{ fmtPrice(index?.high ?? 0) }}</b></span>
-              <span>最低 <b class="tabular down">{{ fmtPrice(index?.low ?? 0) }}</b></span>
+              <span>最高 <b class="tabular up">{{ fmtPrice(index?.high) }}</b></span>
+              <span>最低 <b class="tabular down">{{ fmtPrice(index?.low) }}</b></span>
             </div>
           </div>
           <div class="chart-box">

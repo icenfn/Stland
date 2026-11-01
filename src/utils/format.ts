@@ -2,21 +2,22 @@
 
 import dayjs from 'dayjs'
 
-export function fmtPrice(value: number, digits = 2): string {
-  if (!Number.isFinite(value)) return '--'
+/** 价格：非有限值（含指数无成分时的 null）统一显示「--」 */
+export function fmtPrice(value: number | null | undefined, digits = 2): string {
+  if (value == null || !Number.isFinite(value)) return '--'
   return value.toFixed(digits)
 }
 
 /** 涨跌幅：带符号百分号 */
-export function fmtPct(value: number, digits = 2): string {
-  if (!Number.isFinite(value)) return '--'
+export function fmtPct(value: number | null | undefined, digits = 2): string {
+  if (value == null || !Number.isFinite(value)) return '--'
   const sign = value > 0 ? '+' : ''
   return `${sign}${value.toFixed(digits)}%`
 }
 
 /** 金额压缩：1.23 亿 / 4567.8 万 */
-export function fmtAmount(value: number): string {
-  if (!Number.isFinite(value)) return '--'
+export function fmtAmount(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return '--'
   const abs = Math.abs(value)
   if (abs >= 1e8) return `${(value / 1e8).toFixed(2)}亿`
   if (abs >= 1e4) return `${(value / 1e4).toFixed(2)}万`
@@ -46,15 +47,16 @@ export function fmtSignedMoney(value: number, digits = 2): string {
 }
 
 /** 成交量：股 → 手（1 手 = 100 股） */
-export function fmtVolume(shares: number): string {
-  if (!Number.isFinite(shares)) return '--'
+export function fmtVolume(shares: number | null | undefined): string {
+  if (shares == null || !Number.isFinite(shares)) return '--'
   const hands = shares / 100
   if (hands >= 1e4) return `${(hands / 1e4).toFixed(2)}万手`
   return `${Math.round(hands)}手`
 }
 
 /** 价格方向 → 语义色（A 股：红涨绿跌，与欧美相反） */
-export function trendClass(value: number): string {
+export function trendClass(value: number | null | undefined): string {
+  if (value == null) return 'flat'
   if (value > 0) return 'up'
   if (value < 0) return 'down'
   return 'flat'

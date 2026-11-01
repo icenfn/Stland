@@ -152,30 +152,34 @@ const statRows = computed(() => {
  * 不必在每处取值时判空。
  */
 function toDetail(src: Quote | IndexQuote, index: boolean): DetailQuote {
+  // 指数点位可为 null（没有可用成分报价）。这里收敛成 0 保证下游类型稳定，
+  // 是否展示由 `has_data` 决定，模板不会把 0 当真实点位渲染。
+  const num = (v: number | null | undefined): number => (v == null ? 0 : v)
   const common = {
     code: src.code,
     name: src.name,
-    price: src.price,
-    prev_close: src.prev_close,
-    open: src.open,
-    high: src.high,
-    low: src.low,
+    price: num(src.price),
+    prev_close: num(src.prev_close),
+    open: num(src.open),
+    high: num(src.high),
+    low: num(src.low),
     volume: src.volume ?? 0,
-    amount: src.amount,
-    change: src.change,
-    change_pct: src.change_pct,
+    amount: num(src.amount),
+    change: num(src.change),
+    change_pct: num(src.change_pct),
   }
   if (index) {
     const ix = src as IndexQuote
     return {
       ...common,
       // 指数振幅只能现算：没有换手率概念，按 0 处理
-      amplitude: ix.prev_close ? ((ix.high - ix.low) / ix.prev_close) * 100 : 0,
+      amplitude: ix.prev_close ? ((common.high - common.low) / ix.prev_close) * 100 : 0,
       turnover_rate: 0,
       up: ix.up,
       down: ix.down,
       flat: ix.flat,
       members: ix.members,
+      has_data: ix.has_data !== false,
       is_index: true,
     }
   }

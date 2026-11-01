@@ -104,17 +104,23 @@ export interface SessionState {
   timezone_label?: string
 }
 
-/** 指数快照：现在和个股一样有代码、可跳转详情 */
+/**
+ * 指数快照：和个股一样有代码、可跳转详情。
+ *
+ * 点位类字段一律可为 `null` —— 指数由成分股合成，没有任何可用成分报价时
+ * 它**不存在点位**（`has_data=false`）。调用方必须先判断 `has_data`，
+ * 不要用 `?? 0` 兜底成 0 点，那会让空库看起来像已经开盘。
+ */
 export interface IndexQuote {
   code: string
   name: string
-  price: number
-  prev_close: number
-  open: number
-  high: number
-  low: number
-  change: number
-  change_pct: number
+  price: number | null
+  prev_close: number | null
+  open: number | null
+  high: number | null
+  low: number | null
+  change: number | null
+  change_pct: number | null
   amount: number
   /**
    * 成分合计成交量。
@@ -126,6 +132,8 @@ export interface IndexQuote {
   down: number
   flat: number
   members: number
+  /** 是否有可用成分报价；false 时点位相关字段全为 null */
+  has_data?: boolean
   is_index: boolean
 }
 
@@ -159,6 +167,8 @@ export interface DetailQuote {
   down?: number
   flat?: number
   members?: number
+  /** 仅指数有：false 表示没有可用成分报价，点位字段无意义 */
+  has_data?: boolean
   is_index?: boolean
 }
 
