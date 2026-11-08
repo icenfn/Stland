@@ -17,6 +17,7 @@
  *    界面只呈现「保守型 / 稳健型 / 进取型」这一件事。
  */
 import { computed, reactive } from 'vue'
+import { defineStore } from 'pinia'
 import { accountApi } from '@/api'
 import type { RiskProfile } from '@/api/types'
 import { useAuth } from '@/stores/auth'
@@ -109,15 +110,22 @@ export function levelTone(level: number | undefined): string {
 
 const EMPTY: RiskProfile = { assessed: false, level: 0, label: '未测评', assessed_at: 0 }
 
-const state = reactive({
-  profile: { ...EMPTY } as RiskProfile,
-  loading: false,
-  saving: false,
-  error: '',
-  loaded: false,
-})
-
-export function useRisk() {
+/**
+ * 风险偏好（Pinia store，P1-34）。
+ *
+ * 与 auth 分开的理由：测评进度是「账户维度的业务数据」，
+ * 它既要在资产页、个人页、测评页之间共享，又要在登出时整块清空。
+ * 迁进 Pinia 后，同一份状态只有一个实例（HMR 下不再重复创建 reactive），
+ * 登出清理由 auth 侧统一触发 reset，不再依赖各调用方自觉。
+ */
+export const useRiskStore = defineStore('risk', () => {
+  const state = reactive({
+    profile: { ...EMPTY } as RiskProfile,
+    loading: false,
+    saving: false,
+    error: '',
+    loaded: false,
+  })
   const { syncUser } = useAuth()
 
   /** 已测评 = 服务端有测评时间戳。这是唯一判据，客户端不再自行推断 */
@@ -181,4 +189,12 @@ export function useRisk() {
   }
 
   return { state, assessed, level, assessedAt, label, refresh, submit, reset }
+})
+
+/**
+ * 兼容层：保持旧调用签名 `useRisk()` 不变。
+ * 所有调用点都在 `app.use(createPinia())` 之后执行，因此直接转发即可。
+ */
+export function useRisk() {
+  return useRiskStore()
 }

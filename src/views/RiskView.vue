@@ -75,11 +75,11 @@ onMounted(async () => {
           共 {{ RISK_QUESTIONS.length }} 题，约 1 分钟。结果用于展示你适配的风险偏好等级，
           不影响撮合规则。可随时重新测评，以最后一次为准。
         </p>
-        <div v-if="risk.assessed.value" class="done-row">
-          <span class="done-tag" :style="{ color: levelTone(risk.level.value) }">
-            当前：{{ levelLabel(risk.level.value) }}
+        <div v-if="risk.assessed" class="done-row">
+          <span class="done-tag" :style="{ color: levelTone(risk.level) }">
+            当前：{{ levelLabel(risk.level) }}
           </span>
-          <span class="text-xs">{{ fmtDateTime(risk.assessedAt.value) }} 完成</span>
+          <span class="text-xs">{{ fmtDateTime(risk.assessedAt) }} 完成</span>
         </div>
         <div v-else class="done-row">
           <span class="text-xs" style="color: var(--c-text-3)">尚未测评</span>

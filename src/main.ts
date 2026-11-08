@@ -1,23 +1,15 @@
 import { createApp } from 'vue'
+import { createPinia } from 'pinia'
 import { createRouter, createWebHashHistory } from 'vue-router'
 import App from './App.vue'
 import { routes } from './router'
 import { useAuth } from './stores/auth'
-import { setUnauthorizedHandler, TOKEN_KEY } from './api/http'
+import { setUnauthorizedHandler } from './api/http'
+import { hydrateSession, hasSession } from './api/session'
 import { assertConfig, apiConfig, serverLabel } from './config'
-
-// zebra-swiper 是 uni-app 生态组件，会摸 window.uni 上的几个方法。
-// 必须在任何引用到它的组件被求值之前装好垫片，所以这两行放在最前面，
-// 且要早于 App.vue / router 的组件树挂载（import 顺序即执行顺序）。
-import { installUniShim } from './shims/uni'
-
-installUniShim()
 
 import './styles/global.css'
 import './styles/immersive.css'
-// zebra-swiper 的样式是 scss，且模板用小程序标签，需要配套的标签样式补齐
-import '@zebra-ui/swiper/index.scss'
-import './styles/zebra-compat.css'
 
 /**
  * 兜底错误界面。
@@ -59,9 +51,14 @@ const router = createRouter({
   },
 })
 
-try {
+async function bootstrap(): Promise<void> {
   // 配置自检：地址写错时立刻给出可读提示，而不是等第一次请求才报奇怪错误
   assertConfig()
+
+  // P0-8：会话在挂载前从安全存储装进内存副本。
+  // 必须 await —— 路由守卫与首屏渲染都会同步读令牌，
+  // 装晚了就会出现「已登录用户被弹回登录页」的闪屏。
+  await hydrateSession()
 
   const app = createApp(App)
 
@@ -69,6 +66,11 @@ try {
   app.config.errorHandler = (err, _instance, info) => {
     console.error('[stland] 组件异常', err, info)
   }
+
+  // P1-34：状态统一由 Pinia 承载（认证/行情/风险偏好），
+  // 不再用「模块级 reactive + useStorage」散落各处。Pinia 需要在任何 store
+  // 首次使用前注册，所以这里紧跟 createApp 之后。
+  app.use(createPinia())
 
   const auth = useAuth()
   auth.bootstrap()
@@ -83,8 +85,7 @@ try {
    *     不该连行情都看不到。交给发起方自己降级处理即可。
    */
   setUnauthorizedHandler(() => {
-    const hadSession = Boolean(localStorage.getItem(TOKEN_KEY))
-    if (!hadSession) return
+    if (!hasSession()) return
     auth.forceLogout()
     if (router.currentRoute.value.name !== 'login') {
       void router.replace({ name: 'login' })
@@ -99,17 +100,32 @@ try {
    */
   const BROWSE_WITHOUT_LOGIN = new Set(['home', 'market', 'stock', 'index'])
 
-  // 路由守卫：未登录可浏览公开行情；账户类页面仍需登录；管理端路由校验角色
+  /**
+   * 路由守卫（P1-22 导航权限）。
+   *
+   * 旧实现用 `to.meta.role` 字符串 + `auth.can()` 判能力，两处口径不一致：
+   * meta 里写的是能力名，而能力表按角色维护，一旦新增角色就会漏判。
+   * 现在反过来：守卫只看「这条路由要哪种能力」，能力由 store 的 can() 决定，
+   * 角色→能力的映射只留在 store 一张表里（单一事实来源）。
+   *
+   * 同时把「未登录」与「已登录但无权」分开处理：前者去登录页并记下回跳地址，
+   * 后者回首页 —— 让用户去登录一个已经登录的账号是没有意义的。
+   */
   router.beforeEach((to) => {
     const isPublic = to.meta.public === true
     const browseOk = BROWSE_WITHOUT_LOGIN.has(String(to.name ?? ''))
-    if (!auth.isLoggedIn.value && !isPublic && !browseOk) {
+
+    if (!auth.isLoggedIn && !isPublic && !browseOk) {
       return { name: 'login', query: { redirect: to.fullPath } }
     }
-    if (to.meta.role && auth.isLoggedIn.value && !auth.can(String(to.meta.role))) {
+
+    const need = to.meta.capability ? String(to.meta.capability) : ''
+    if (need && auth.isLoggedIn && !auth.can(need)) {
+      // 已登录但能力不足：回首页，不把人踢去登录
       return { name: 'home' }
     }
-    if (auth.isLoggedIn.value && isPublic) {
+
+    if (auth.isLoggedIn && isPublic) {
       return { name: 'home' }
     }
     return true
@@ -117,8 +133,10 @@ try {
 
   app.use(router)
   app.mount('#app')
-} catch (err) {
+}
+
+bootstrap().catch((err) => {
   console.error('[stland] 启动失败', err)
   const msg = err instanceof Error ? `${err.message}\n\n${err.stack ?? ''}` : String(err)
   renderFatal('应用启动失败', msg)
-}
+})

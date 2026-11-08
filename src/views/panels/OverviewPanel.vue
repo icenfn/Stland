@@ -32,13 +32,19 @@ import {
   fmtSignedMoney,
   trendClass,
 } from '@/utils/format'
+import { storeToRefs } from 'pinia'
 import MiniChart from '@/components/MiniChart.vue'
 import QuoteRow from '@/components/QuoteRow.vue'
 
 const router = useRouter()
 const market = useMarket()
 const auth = useAuth()
-const { state, index, upCount, downCount, ready } = market
+// state 是 reactive 对象，解构出来的仍是同一个代理，天然保持响应；
+// 而 index / upCount / downCount / ready 是计算属性 —— Pinia 在 store 上把它们
+// 解包成了值，直接解构会当场取快照、之后再也不更新（画面卡在首帧）。
+// storeToRefs 保留它们的 ref 身份，模板自动解包、脚本里继续用 .value。
+const { state } = market
+const { index, upCount, downCount, ready } = storeToRefs(market)
 
 const rankTab = ref<'gainers' | 'losers' | 'active'>('gainers')
 

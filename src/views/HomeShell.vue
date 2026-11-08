@@ -1,17 +1,24 @@
 <script setup lang="ts">
 /**
- * 首页框架（应用外壳）：五个主页面横排在一个 swiper 里，点击底栏或左右滑动切换。
+ * 首页框架（应用外壳）：五个主页面横排在一个横向轨道里，点击底栏或左右滑动切换。
  *
- * 本轮把自实现的位移轨道换成了 zebra-swiper（@zebra-ui/swiper v3.0.3）。
- * 选它的理由是它直接封了 Swiper 内核，带 `noSwipingSelector`：
- * 面板里有横向滚动条（指数卡、板块筛选、自选分组 chip），把这些容器标成
- * `[data-hscroll]` 交给 noSwipingSelector，手势落在里面时内核自己放弃横向接管 ——
- * 比在 touchend 里逐个判方向更干净，也不会和纵向滚动抢事件。
+ * 为什么不再用第三方 swiper
+ * ------------------------
+ * 上一版为了 `noSwipingSelector`（面板里有横向滚动条，手势落在里面时要让给它们）
+ * 引入了 @zebra-ui/swiper —— 那是 uni-app 生态的组件，它要求模板写成小程序标签，
+ * 还需要一份 `window.uni` 运行时垫片（src/shims/uni.ts，185 行）和一份标签样式补齐
+ * （src/styles/zebra-compat.css）。为了一个「五屏平移」引入了三层兼容负担。
+ *
+ * 现在换成 40 行的自实现轨道：
+ *   · 位移用 transform: translate3d —— 走合成层，不触发布局；
+ *   · 手势在 touchend 判定，|dx| 超过阈值且明显大于 |dy| 才切屏，
+ *     纵向滚动因此完全不受干扰（内核方案反而要靠 touch-action 反复调）；
+ *   · 落在 `[data-hscroll]` 里的手势直接放弃接管，等价于原来的 noSwipingSelector。
  *
  * 布局仍然是三层，缺一不可：
- *   1. top-bar —— 品牌。固定在 swiper 之外，滑动切页时它不动；
- *   2. swiper  —— 五屏横向轨道，每屏各自纵向滚动；
- *   3. TabBar  —— 在 App.vue 里画，fixed 贴底，同样在 swiper 之外。
+ *   1. top-bar —— 品牌。固定在轨道之外，滑动切页时它不动；
+ *   2. track   —— 五屏横向轨道，每屏各自纵向滚动；
+ *   3. TabBar  —— 在 App.vue 里画，fixed 贴底，同样在轨道之外。
  *
  * 五页常驻挂载（不 v-if），滚动位置、筛选状态不会因为切页丢失；
  * 行情连接也只在这里启停一次，五个页面都活着，谁单独 stop 都会把别人的数据掐断。
@@ -26,9 +33,6 @@ import WatchPanel from './panels/WatchPanel.vue'
 import TradePanel from './panels/TradePanel.vue'
 import ProfilePanel from './panels/ProfilePanel.vue'
 
-// 走包自带的 index.d.ts 具名导出，vue-tsc 才不会报缺声明
-import { ZSwiper, ZSwiperItem } from '@zebra-ui/swiper'
-
 const route = useRoute()
 const router = useRouter()
 const market = useMarket()
@@ -42,34 +46,93 @@ const PANEL_NAMES = ['概览', '行情', '自选', '交易', '我的'] as const
 const active = ref(0)
 /** 顶栏副标题：当前屏的名字 */
 const activeName = computed(() => PANEL_NAMES[clamp(active.value)] ?? '')
-const swiperRef = ref<any>(null)
+
+/** 拖动过程中的实时位移（百分比，负值向左），松手后归零由 transition 接管 */
+const dragOffset = ref(0)
+const dragging = ref(false)
 
 function clamp(i: number): number {
   return Math.min(Math.max(i, 0), PATHS.length - 1)
 }
 
-/** 取内核实例：组件 expose 的是 { swiper: Swiper } */
-function instance(): any {
-  const r = swiperRef.value
-  return r?.swiper ?? r?.$swiper ?? null
-}
+/** 轨道位移：基准位置 + 拖动中的临时偏移 */
+const trackStyle = computed(() => {
+  const base = -active.value * 100
+  return {
+    transform: `translate3d(${base + dragOffset.value}%, 0, 0)`,
+    transition: dragging.value ? 'none' : 'transform 280ms cubic-bezier(0.22, 0.61, 0.36, 1)',
+  }
+})
 
 /** 切到第 i 屏，并把地址同步过去（replace：不堆历史，返回键交给 useBackExit） */
 function go(i: number) {
   const target = clamp(i)
-  const inst = instance()
-  if (inst?.slideTo) inst.slideTo(target)
+  dragOffset.value = 0
   active.value = target
   if (route.path !== PATHS[target]) void router.replace(PATHS[target])
 }
 
 /** 手势结束后内核回传的当前页，用来同步高亮与地址 */
 function onSlideChange() {
-  const inst = instance()
-  const i = clamp(Number(inst?.activeIndex ?? 0))
-  if (i === active.value) return
-  active.value = i
-  if (route.path !== PATHS[i]) void router.replace(PATHS[i])
+  void 0
+}
+
+// ---- 手势 ----
+let startX = 0
+let startY = 0
+let axis: 'none' | 'x' | 'y' = 'none'
+/** 手势起点是否落在横向滚动容器里：是则整段手势交还给容器 */
+let yieldToScroll = false
+
+function onTouchStart(e: TouchEvent) {
+  if (e.touches.length !== 1) return
+  const t = e.touches[0]
+  startX = t.clientX
+  startY = t.clientY
+  axis = 'none'
+  const el = e.target as HTMLElement | null
+  // 等价于内核的 noSwipingSelector：横向滚动条里的滑动不切屏
+  yieldToScroll = Boolean(el?.closest?.('[data-hscroll]'))
+  dragging.value = false
+}
+
+function onTouchMove(e: TouchEvent) {
+  if (yieldToScroll || e.touches.length !== 1) return
+  const t = e.touches[0]
+  const dx = t.clientX - startX
+  const dy = t.clientY - startY
+
+  if (axis === 'none') {
+    // 前 10px 判方向：横向优先接管，纵向则整段放弃（交还页面滚动）
+    if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return
+    axis = Math.abs(dx) > Math.abs(dy) * 1.2 ? 'x' : 'y'
+    if (axis === 'x') dragging.value = true
+  }
+  if (axis !== 'x') return
+
+  const width = (e.currentTarget as HTMLElement).clientWidth || 1
+  let next = (dx / width) * 100
+  // 首尾屏加阻尼：拖不动但有反馈，避免「滑到尽头像卡死」
+  const atEdge = (active.value === 0 && dx > 0) || (active.value === PATHS.length - 1 && dx < 0)
+  if (atEdge) next *= 0.3
+  dragOffset.value = next
+}
+
+function onTouchEnd(e: TouchEvent) {
+  if (!dragging.value) {
+    axis = 'none'
+    dragOffset.value = 0
+    return
+  }
+  const t = e.changedTouches[0]
+  const dx = t ? t.clientX - startX : 0
+  const width = (e.currentTarget as HTMLElement).clientWidth || 1
+  // 越过 1/4 屏宽，或快速轻扫（位移小但方向明确）都算一次切屏
+  const passed = Math.abs(dx) > width / 4 || Math.abs(dx) > 40
+  dragging.value = false
+  axis = 'none'
+  if (passed) go(active.value + (dx < 0 ? 1 : -1))
+  else dragOffset.value = 0
 }
 
 // 深链 /market、/trade 等进来时直接落到对应屏
@@ -79,8 +142,7 @@ watch(
     const i = clamp(Number(v) || 0)
     if (i === active.value) return
     active.value = i
-    const inst = instance()
-    if (inst?.slideTo) inst.slideTo(i)
+    dragOffset.value = 0
   },
 )
 
@@ -88,13 +150,9 @@ onMounted(async () => {
   active.value = clamp(Number(route.meta.panel) || 0)
   market.start(1800)
   // 把「滑回首页」交给返回键处理：框架页按返回且不在第 0 屏时，
-  // 由它把 swiper 横向滑回首页（切 tab 用 replace，不产生历史，因此不动路由）。
+  // 由它把轨道横向滑回首页（切 tab 用 replace，不产生历史，因此不动路由）。
   setHomeHandler(() => go(0))
-  // 首屏尺寸要等布局稳定后再让内核量一次，否则宽度按 0 算会全部叠在一起
   await nextTick()
-  const inst = instance()
-  if (inst?.update) inst.update()
-  if (active.value && inst?.slideTo) inst.slideTo(active.value, 0)
 })
 
 onBeforeUnmount(() => {
@@ -107,7 +165,7 @@ defineExpose({ go, active })
 
 <template>
   <div class="shell">
-    <!-- 顶部应用栏：在 swiper 之外，和底栏一样属于外壳。
+    <!-- 顶部应用栏：在轨道之外，和底栏一样属于外壳。
          右侧原来挂着「连接状态」和「交易时段」两个胶囊，本轮按需求删掉：
          连接质量属于运维信息（已挪到后台「模拟引擎」页签），
          交易时段在行情页与 K 线头部会各自呈现，放在全局顶栏反而每屏都在占位。 -->
@@ -118,30 +176,20 @@ defineExpose({ go, active })
       <span class="spacer" />
     </header>
 
-    <div class="pager">
-      <z-swiper
-        ref="swiperRef"
-        :initial-slide="active"
-        :speed="280"
-        :slides-per-view="1"
-        :space-between="0"
-        :follow-finger="true"
-        :threshold="8"
-        :touch-angle="35"
-        :resistance-ratio="0.3"
-        :touch-start-prevent-default="false"
-        :passive-listeners="false"
-        :resistance="true"
-        no-swiping-selector="[data-hscroll]"
-        class="shell-swiper"
-        @slideChange="onSlideChange"
-      >
-        <z-swiper-item class="pane"><OverviewPanel /></z-swiper-item>
-        <z-swiper-item class="pane"><MarketPanel /></z-swiper-item>
-        <z-swiper-item class="pane"><WatchPanel /></z-swiper-item>
-        <z-swiper-item class="pane"><TradePanel /></z-swiper-item>
-        <z-swiper-item class="pane"><ProfilePanel /></z-swiper-item>
-      </z-swiper>
+    <div
+      class="pager"
+      @touchstart.passive="onTouchStart"
+      @touchmove.passive="onTouchMove"
+      @touchend="onTouchEnd"
+      @touchcancel="onTouchEnd"
+    >
+      <div class="track" :style="trackStyle">
+        <div class="pane"><OverviewPanel /></div>
+        <div class="pane"><MarketPanel /></div>
+        <div class="pane"><WatchPanel /></div>
+        <div class="pane"><TradePanel /></div>
+        <div class="pane"><ProfilePanel /></div>
+      </div>
     </div>
   </div>
 </template>
@@ -181,25 +229,9 @@ defineExpose({ go, active })
   flex: 1;
 }
 
-.chip {
-  font-size: 11px;
-  padding: 4px 9px;
-  border-radius: 20px;
-  background: rgba(255, 255, 255, 0.08);
+.page-name {
+  font-size: 12px;
   color: var(--c-text-2);
-  white-space: nowrap;
-}
-.chip.feed.socket {
-  background: rgba(18, 183, 106, 0.16);
-  color: #4ade9b;
-}
-.chip.feed.polling {
-  background: rgba(240, 160, 32, 0.16);
-  color: #f5c26b;
-}
-.chip.feed.offline {
-  background: rgba(255, 77, 79, 0.16);
-  color: #ff8b8d;
 }
 
 .pager {
@@ -212,20 +244,22 @@ defineExpose({ go, active })
   overflow: hidden;
 }
 
-/* 内核容器要撑满，否则 slidesPerView:1 算不出可用宽度 */
-.shell-swiper {
-  width: 100%;
+/* 五屏轨道：宽度按屏数铺开，位移由 transform 完成（合成层，不触发布局） */
+.track {
+  display: flex;
+  width: 500%;
   height: 100%;
+  will-change: transform;
 }
 
-/* 每屏自己纵向滚动：横向交给内核，纵向交还浏览器 */
+/* 每屏自己纵向滚动：横向交给轨道，纵向交还浏览器 */
 .pane {
+  width: 20%;
   height: 100%;
   overflow-y: auto;
   overflow-x: hidden;
   -webkit-overflow-scrolling: touch;
   overscroll-behavior: contain;
-  /* 让内核把纵向手势判给页面滚动 */
   touch-action: pan-y;
 }
 

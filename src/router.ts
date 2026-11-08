@@ -39,19 +39,19 @@ export const routes: RouteRecordRaw[] = [
     path: '/watch',
     name: 'watch',
     component: () => import('./views/HomeShell.vue'),
-    meta: { title: '自选', tab: 'watch', panel: 2 },
+    meta: { title: '自选', tab: 'watch', panel: 2, capability: 'account.own' },
   },
   {
     path: '/trade',
     name: 'trade',
     component: () => import('./views/HomeShell.vue'),
-    meta: { title: '交易', tab: 'trade', panel: 3 },
+    meta: { title: '交易', tab: 'trade', panel: 3, capability: 'trade.own' },
   },
   {
     path: '/profile',
     name: 'profile',
     component: () => import('./views/HomeShell.vue'),
-    meta: { title: '我的', tab: 'profile', panel: 4 },
+    meta: { title: '我的', tab: 'profile', panel: 4, capability: 'account.own' },
   },
 
   // ---- 独立页面：不挂底栏，返回键回到来源 ----
@@ -80,10 +80,32 @@ export const routes: RouteRecordRaw[] = [
     path: '/institution',
     name: 'institution',
     component: () => import('./views/institution/DeskView.vue'),
-    meta: { title: '机构交易台', role: 'inst.desk' },
+    meta: { title: '机构交易台', capability: 'inst.desk' },
   },
 
   // 「资产」已并入「交易」，旧地址不 404
   { path: '/assets', redirect: '/trade' },
   { path: '/:pathMatch(.*)*', redirect: '/' },
 ]
+
+/**
+ * 路由元信息的类型声明（P1-22）。
+ *
+ * 拆分前后 meta 里混着三种东西：`public` 是访问控制、`tab/panel` 是外壳定位、
+ * `title` 是文档标题。以前它们都是 `any`，拼错 `capabilty` 这种键不会报错，
+ * 只会静默失效 —— 权限就悄悄丢了。这里显式声明，让类型系统兜住这类错误。
+ */
+declare module 'vue-router' {
+  interface RouteMeta {
+    /** 文档标题 */
+    title?: string
+    /** 无需登录即可访问（登录页、公开行情页） */
+    public?: boolean
+    /** 底栏标识（外壳五屏） */
+    tab?: string
+    /** 初始屏序号（外壳五屏） */
+    panel?: number
+    /** 访问所需能力；由 auth store 的 can() 判定，未登录不放行 */
+    capability?: string
+  }
+}

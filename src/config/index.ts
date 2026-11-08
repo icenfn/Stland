@@ -16,10 +16,6 @@ export interface ApiConfig {
   baseUrl: string
   /** 单请求超时（毫秒） */
   timeoutMs: number
-  /** 是否启用 HMAC 请求签名 */
-  signEnabled: boolean
-  /** 与服务端 STLAND_SIGN_SECRET 一致的共享密钥 */
-  signSecret: string
   /** 轮询节奏 */
   polling: {
     marketMs: number
@@ -46,13 +42,6 @@ function envOr(name: string, fallback: string): string {
 
 const fileApi = raw.api
 
-/** 是否启用签名：环境变量给了就以它为准，否则看配置文件里的开关 */
-function resolveSignEnabled(): boolean {
-  const envFlag = import.meta.env.VITE_API_SIGNATURE as string | undefined
-  if (envFlag !== undefined && envFlag !== '') return String(envFlag) !== 'false'
-  return fileApi.signature.enabled === true
-}
-
 export const appConfig = {
   name: raw.app.name,
   version: raw.app.version,
@@ -61,8 +50,6 @@ export const appConfig = {
 export const apiConfig: ApiConfig = {
   baseUrl: stripTrailingSlash(envOr('VITE_API_BASE', fileApi.baseUrl) || FALLBACK_BASE),
   timeoutMs: Number(envOr('VITE_API_TIMEOUT', String(fileApi.timeoutMs))) || 15000,
-  signEnabled: resolveSignEnabled(),
-  signSecret: envOr('VITE_API_SIGN_SECRET', fileApi.signature.secret),
   polling: {
     marketMs: Number(envOr('VITE_POLL_MARKET_MS', String(fileApi.polling.marketMs))) || 1500,
     accountMs: Number(envOr('VITE_POLL_ACCOUNT_MS', String(fileApi.polling.accountMs))) || 5000,

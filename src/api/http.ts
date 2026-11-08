@@ -1,5 +1,5 @@
 /**
- * HTTP 基础设施：AlovaJS v3 实例 + 全局请求签名。
+ * HTTP 基础设施：AlovaJS v3 实例。
  *
  * 两处关键设计：
  *
@@ -14,27 +14,29 @@
  *    原生通道由 Rust 侧发请求，绕开这两条浏览器策略；
  *    明文 HTTP 的放行则单独由 network_security_config.xml 按主机白名单管控。
  *
- * 签名（与服务端 app/security.py 逐字节对应，纯函数见 api/sign.ts）：
- *   签名原文 = METHOD \
- PATH \
- TS \
- NONCE \
- SHA256(BODY) \
- USER_ID
- *   X-Stland-Sign = HMAC-SHA256(共享密钥, 签名原文) 十六进制
+ * 关于请求签名（已移除）
+ * --------------------
+ * 旧实现给每个请求加 `X-Stland-Sign = HMAC(共享密钥, canonical)`，而密钥
+ * `dev-sign-secret-stland` 就写在 app.config.json 里并打进安装包 —— 攻击者从
+ * APK 解出密钥即可伪造任意签名，这层防护只增加复杂度、不提供任何安全增益；
+ * 更糟的是它依赖 `crypto.subtle`，在明文 HTTP 的 Android WebView 里不是安全上下文，
+ * 直接抛错导致全部请求失败。因此签名层连服务端一起整体删除（P0-7 选项 A），
+ * 传输安全改由 HTTPS + Bearer 令牌承担。
  */
 import { createAlova } from 'alova'
 import VueHook from 'alova/vue'
 import adapterFetch from 'alova/fetch'
-import { signRequest } from './sign'
 import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
 import { apiConfig } from '@/config'
+import { getToken, getStoredUser } from './session'
 
 export const BASE_URL = apiConfig.baseUrl
-export const SIGN_ENABLED = apiConfig.signEnabled
-const SIGN_SECRET = apiConfig.signSecret
 const TIMEOUT = apiConfig.timeoutMs
 
+/**
+ * 持久化键名。这里保留导出只是为了兼容旧引用（迁移脚本、排障脚本），
+ * 真正的读写已收敛到 api/session.ts —— 不要在别处直接碰 localStorage。
+ */
 export const TOKEN_KEY = 'stland.access_token'
 export const USER_KEY = 'stland.user'
 
@@ -67,21 +69,15 @@ function normalizeError(status: number, body: any): ApiError {
   return err
 }
 
-/** 读取当前登录用户 id（参与签名，服务端亦用它绑定会话） */
-function currentUserId(): string {
-  try {
-    const raw = localStorage.getItem(USER_KEY)
-    if (!raw) return ''
-    const parsed = JSON.parse(raw)
-    return parsed && parsed.id != null ? String(parsed.id) : ''
-  } catch {
-    return ''
-  }
-}
-
 let onUnauthorized: (() => void) | null = null
 export function setUnauthorizedHandler(fn: () => void) {
   onUnauthorized = fn
+}
+
+/** 读取当前登录用户 id（业务侧偶尔需要，例如埋点区分身份） */
+export function currentUserId(): string {
+  const u = getStoredUser<{ id?: number | string }>()
+  return u && u.id != null ? String(u.id) : ''
 }
 
 /**
@@ -104,28 +100,14 @@ export const alovaInstance = createAlova({
   cacheFor: { GET: 0, POST: 0 },
 
   /**
-   * 唯一出口：注入令牌与签名。
-   * 这里 await 签名计算，Alova 会等它完成再发请求，因此不会出现「头还没算好就发出去」。
+   * 唯一出口：注入令牌。
+   * 令牌来自 api/session 的内存副本（同步），因此这里不需要 await。
    */
-  beforeRequest: async (method) => {
+  beforeRequest: (method) => {
     const cfg = method.config
     const headers: Record<string, string> = { ...(cfg.headers as Record<string, string> | undefined) }
-
-    const token = localStorage.getItem(TOKEN_KEY)
+    const token = getToken()
     if (token) headers['Authorization'] = `Bearer ${token}`
-
-    if (SIGN_ENABLED) {
-      Object.assign(
-        headers,
-        await signRequest({
-          secret: SIGN_SECRET,
-          method: method.type,
-          url: method.url,
-          data: method.data,
-          userId: currentUserId(),
-        }),
-      )
-    }
     cfg.headers = headers
   },
 
@@ -165,5 +147,3 @@ export const alovaInstance = createAlova({
     },
   },
 })
-
-export { signRequest }

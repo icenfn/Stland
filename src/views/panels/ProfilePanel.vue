@@ -36,7 +36,7 @@ const initial = computed(() =>
 )
 
 const riskText = computed(() =>
-  risk.assessed.value ? levelLabel(risk.level.value) : '未测评',
+  risk.assessed ? levelLabel(risk.level) : '未测评',
 )
 
 function go(path: string) {
@@ -86,7 +86,7 @@ onMounted(async () => {
           </div>
           <div class="hs-cell">
             <span class="hs-k">风险偏好</span>
-            <span class="hs-v" :style="{ color: risk.assessed.value ? levelTone(risk.level.value) : undefined }">
+            <span class="hs-v" :style="{ color: risk.assessed ? levelTone(risk.level) : undefined }">
               {{ riskText }}
             </span>
           </div>
@@ -102,8 +102,8 @@ onMounted(async () => {
             <span class="mi-main">
               <span class="mi-t">风险偏好测评</span>
               <span class="mi-s">
-                <template v-if="risk.assessed.value">
-                  {{ riskText }} · {{ fmtDateTime(risk.assessedAt.value) }}
+                <template v-if="risk.assessed">
+                  {{ riskText }} · {{ fmtDateTime(risk.assessedAt) }}
                 </template>
                 <template v-else>未测评，用于匹配可承受的仓位波动</template>
               </span>
@@ -111,7 +111,7 @@ onMounted(async () => {
             <span class="arrow">›</span>
           </button>
 
-          <button v-if="auth.isInstitution.value" class="menu-item" @click="go('/institution')">
+          <button v-if="auth.isInstitution" class="menu-item" @click="go('/institution')">
             <span class="mi-icon">▤</span>
             <span class="mi-main">
               <span class="mi-t">机构交易台</span>

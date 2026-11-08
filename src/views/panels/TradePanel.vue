@@ -184,8 +184,8 @@ watch(
           <div class="row-between">
             <span class="a-label">总资产（元）</span>
             <div class="a-actions">
-              <span v-if="market.session.value?.label" class="sess-tag">
-                {{ market.session.value.label }}
+              <span v-if="market.session?.label" class="sess-tag">
+                {{ market.session?.label }}
               </span>
               <button class="mini-btn" :disabled="loading" @click="refreshAll">
                 {{ loading ? '刷新中' : '刷新' }}

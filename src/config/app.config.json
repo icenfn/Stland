@@ -7,10 +7,6 @@
   "api": {
     "baseUrl": "http://139.196.225.114:8999",
     "timeoutMs": 20000,
-    "signature": {
-      "enabled": true,
-      "secret": "dev-sign-secret-stland"
-    },
     "polling": {
       "marketMs": 1500,
       "accountMs": 5000
