@@ -21,7 +21,7 @@
  * 令牌失效判定：`expiresAt` 一并持久化，过期即视为无令牌（不等到 401 才发现），
  * 这样冷启动就能直接进登录页，不会先闪一下首页再被踢回来。
  */
-import { IS_TAURI, TOKEN_KEY, USER_KEY } from '@/api/http'
+import { IS_TAURI, TOKEN_KEY, USER_KEY } from './runtime'
 
 /** 内存副本：同步读的唯一来源 */
 const cache = {

@@ -28,22 +28,14 @@ import VueHook from 'alova/vue'
 import adapterFetch from 'alova/fetch'
 import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
 import { apiConfig } from '@/config'
+import { IS_TAURI } from './runtime'
 import { getToken, getStoredUser } from './session'
 
 export const BASE_URL = apiConfig.baseUrl
 const TIMEOUT = apiConfig.timeoutMs
 
-/**
- * 持久化键名。这里保留导出只是为了兼容旧引用（迁移脚本、排障脚本），
- * 真正的读写已收敛到 api/session.ts —— 不要在别处直接碰 localStorage。
- */
-export const TOKEN_KEY = 'stland.access_token'
-export const USER_KEY = 'stland.user'
-
-/** 是否运行在 Tauri 原生壳内（浏览器预览时为 false） */
-export const IS_TAURI =
-  typeof window !== 'undefined' &&
-  '__TAURI_INTERNALS__' in (window as unknown as Record<string, unknown>)
+/** 运行时常量统一来自 ./runtime（叶子模块），此处转出以兼容旧引用 */
+export { IS_TAURI, TOKEN_KEY, USER_KEY } from './runtime'
 
 export interface ApiError extends Error {
   code?: string
